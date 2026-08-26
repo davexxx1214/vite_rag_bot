@@ -2,12 +2,13 @@
   "name": "local-rag-help-demo",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@10.33.2",
   "type": "module",
   "scripts": {
     "dev": "tsx watch server/index.ts",
     "build:index": "tsx scripts/build-index.ts",
     "build": "vite build && tsc -p tsconfig.server.json",
-    "build:all": "npm run build:index && npm run build",
+    "build:all": "pnpm run build:index && pnpm run build",
     "start": "node server-dist/index.js",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json --noEmit"
   },

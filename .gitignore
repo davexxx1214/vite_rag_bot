@@ -5,3 +5,4 @@ server-dist/
 .env.*
 config.yaml
 npm-debug.log*
+package-lock.json

@@ -7,9 +7,9 @@ Chat responses use an NDJSON stream: the browser receives retrieval status and s
 ## Run locally
 
 1. Copy `config.yaml.example` to `config.yaml`, then set `api_key: ...` in the local file.
-2. Install dependencies with `npm install`.
-3. Generate the vector index with `npm run build:index`.
-4. Start development mode with `npm run dev`.
+2. Install dependencies with `pnpm install`.
+3. Generate the vector index with `pnpm build:index`.
+4. Start development mode with `pnpm dev`.
 5. Open `http://localhost:3000`.
 
 The key stays in the Node process. `config.yaml` is ignored by Git and is never served by Vite.
@@ -17,11 +17,11 @@ The key stays in the Node process. `config.yaml` is ignored by Git and is never 
 ## Production build
 
 ```sh
-npm run build:all
-NODE_ENV=production npm start
+pnpm build:all
+NODE_ENV=production pnpm start
 ```
 
-`build:all` regenerates `data/rag-index.json`, builds the Vite client, and compiles the Node server. Use `npm run build` when the documents and existing vector index have not changed, avoiding an unnecessary embedding request.
+`build:all` regenerates `data/rag-index.json`, builds the Vite client, and compiles the Node server. Use `pnpm build` when the documents and existing vector index have not changed, avoiding an unnecessary embedding request.
 
 ## Project layout
 
