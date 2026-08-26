@@ -1,0 +1,7 @@
+# Copy this file to config.yaml. Never expose config.yaml through Vite/public.
+api_key: <your-openai-api-key>
+
+# Optional overrides
+chat_model: gpt-5-mini
+embedding_model: text-embedding-3-small
+port: 3000

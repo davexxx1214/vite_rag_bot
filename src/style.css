@@ -1,0 +1,134 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+.markdown {
+  overflow-wrap: anywhere;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre,
+.markdown table {
+  margin: 0 0 1em;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.5em;
+}
+
+.markdown li + li {
+  margin-top: 0.35em;
+}
+
+.markdown a {
+  color: #126c46;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.markdown code {
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  background: #edf0eb;
+  color: #9b3f2c;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.88em;
+}
+
+.markdown pre {
+  overflow-x: auto;
+  padding: 1rem;
+  border: 1px solid #26352c;
+  border-radius: 10px;
+  background: #17211a;
+  color: #e8eee9;
+  line-height: 1.55;
+}
+
+.markdown pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.markdown blockquote {
+  padding: 0.85em 1em;
+  border-left: 3px solid #126c46;
+  background: #e7f1ea;
+  color: #375444;
+}
+
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.markdown th,
+.markdown td {
+  padding: 0.55em 0.7em;
+  border: 1px solid #dfe4dd;
+  text-align: left;
+}
+
+.markdown-doc {
+  color: #303a33;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.markdown-doc h2 {
+  margin: 42px 0 12px;
+  color: #17211a;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 27px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+.markdown-doc h3 {
+  margin: 30px 0 10px;
+  color: #17211a;
+  font-size: 17px;
+}
+
+.markdown-message {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.markdown-message h1,
+.markdown-message h2,
+.markdown-message h3,
+.markdown-message h4 {
+  margin: 1em 0 0.45em;
+  color: #17211a;
+  font-size: 1em;
+  font-weight: 800;
+}
+
+.markdown-message pre {
+  max-width: 100%;
+  padding: 0.8rem;
+  font-size: 11px;
+}
