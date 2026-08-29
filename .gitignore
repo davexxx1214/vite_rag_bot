@@ -1,6 +1,6 @@
 node_modules/
 dist/
-java-dist/
+target/
 .env
 .env.*
 config.yaml

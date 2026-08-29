@@ -14,21 +14,29 @@ import java.util.stream.Stream;
 final class HelpDocs {
   private HelpDocs() {}
 
-  static List<HelpDoc> load(Path projectRoot) throws IOException {
-    Path docsDirectory = projectRoot.resolve("docs");
+  static List<HelpDoc> load(Path docsDirectory) throws IOException {
+    Path directory = docsDirectory.toAbsolutePath().normalize();
+    if (!Files.isDirectory(directory)) {
+      throw new IOException("Help document directory does not exist: " + directory);
+    }
+
     List<HelpDoc> docs = new ArrayList<>();
-    try (Stream<Path> files = Files.list(docsDirectory)) {
-      for (Path path : files.filter(file -> file.getFileName().toString().endsWith(".md")).toList()) {
+    try (Stream<Path> files = Files.list(directory)) {
+      for (Path path : files.filter(HelpDocs::isMarkdown).toList()) {
         String filename = path.getFileName().toString();
         String fallbackSlug = filename.substring(0, filename.length() - 3);
         docs.add(parse(Files.readString(path, StandardCharsets.UTF_8), fallbackSlug));
       }
     }
-    docs.sort(Comparator.comparingInt(HelpDoc::order));
+    docs.sort(Comparator.comparingInt(HelpDoc::order).thenComparing(HelpDoc::slug));
     return List.copyOf(docs);
   }
 
-  private static HelpDoc parse(String raw, String fallbackSlug) {
+  private static boolean isMarkdown(Path path) {
+    return Files.isRegularFile(path) && path.getFileName().toString().endsWith(".md");
+  }
+
+  static HelpDoc parse(String raw, String fallbackSlug) {
     String normalized = raw.replace("\r\n", "\n");
     Map<String, String> metadata = new LinkedHashMap<>();
     String content = normalized.trim();
@@ -46,7 +54,9 @@ final class HelpDocs {
           );
         }
         int contentStart = end + 4;
-        if (contentStart < normalized.length() && normalized.charAt(contentStart) == '\n') contentStart++;
+        if (contentStart < normalized.length() && normalized.charAt(contentStart) == '\n') {
+          contentStart++;
+        }
         content = normalized.substring(contentStart).trim();
       }
     }

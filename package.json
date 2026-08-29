@@ -5,14 +5,16 @@
   "packageManager": "pnpm@10.33.2",
   "type": "module",
   "scripts": {
-    "dev": "pnpm build:server && concurrently --kill-others --names JAVA,WEB \"java --add-modules jdk.httpserver -jar java-dist/ragbot.jar --port=3001\" \"vite\"",
-    "build:index": "pnpm build:server && java --add-modules jdk.httpserver -jar java-dist/ragbot.jar --build-index",
-    "build:server": "javac --release 21 --add-modules jdk.httpserver -Xlint:all -Werror -encoding UTF-8 -d java-dist/classes @java-server/sources.txt && jar --create --file java-dist/ragbot.jar --main-class com.example.ragbot.Main -C java-dist/classes .",
+    "maven": "node scripts/run-maven.mjs",
+    "dev": "pnpm build:server && concurrently --kill-others --names JAVA,WEB \"java -jar target/ragbot.jar --server.port=3001\" \"vite\"",
+    "build:index": "pnpm build:server && java -jar target/ragbot.jar --spring.main.web-application-type=none --rag.build-index=true",
+    "build:server": "node scripts/run-maven.mjs --batch-mode package",
     "build": "vite build && pnpm build:server",
     "build:all": "pnpm run build:index && pnpm run build",
-    "server": "pnpm build:server && java --add-modules jdk.httpserver -jar java-dist/ragbot.jar",
-    "server:dev": "pnpm build:server && java --add-modules jdk.httpserver -jar java-dist/ragbot.jar --port=3001",
-    "start": "java --add-modules jdk.httpserver -jar java-dist/ragbot.jar",
+    "server": "pnpm build:server && java -jar target/ragbot.jar",
+    "server:dev": "pnpm build:server && java -jar target/ragbot.jar --server.port=3001",
+    "start": "java -jar target/ragbot.jar",
+    "test:server": "node scripts/run-maven.mjs --batch-mode test",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

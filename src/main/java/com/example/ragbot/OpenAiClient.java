@@ -1,5 +1,7 @@
 package com.example.ragbot;
 
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -14,33 +16,45 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.stereotype.Component;
 
-final class OpenAiClient {
+@Component
+public class OpenAiClient {
   private static final int EMBEDDING_BATCH_SIZE = 64;
 
   @FunctionalInterface
-  interface TextSink {
+  public interface TextSink {
     void accept(String text) throws IOException;
   }
 
-  private final AppConfig config;
+  private final RagProperties properties;
+  private final ObjectMapper objectMapper;
   private final HttpClient http;
+  private final String baseUrl;
 
-  OpenAiClient(AppConfig config) {
-    this.config = config;
+  public OpenAiClient(RagProperties properties, ObjectMapper objectMapper) {
+    if (properties.apiKey().isBlank()) {
+      throw new IllegalStateException(
+          "Missing OpenAI API key. Set api_key in config.yaml or OPENAI_API_KEY."
+      );
+    }
+    this.properties = properties;
+    this.objectMapper = objectMapper;
     this.http = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
         .followRedirects(HttpClient.Redirect.NORMAL)
         .build();
+    this.baseUrl = stripTrailingSlash(properties.openaiBaseUrl().toString());
   }
 
-  double[] embed(String input, String model) throws IOException, InterruptedException {
+  public double[] embed(String input, String model) throws IOException, InterruptedException {
     List<double[]> embeddings = embedTexts(List.of(input), model);
     if (embeddings.isEmpty()) throw new IOException("The embedding API returned no vector");
     return embeddings.getFirst();
   }
 
-  List<double[]> embedTexts(List<String> inputs, String model) throws IOException, InterruptedException {
+  public List<double[]> embedTexts(List<String> inputs, String model)
+      throws IOException, InterruptedException {
     List<double[]> result = new ArrayList<>();
     for (int start = 0; start < inputs.size(); start += EMBEDDING_BATCH_SIZE) {
       int end = Math.min(start + EMBEDDING_BATCH_SIZE, inputs.size());
@@ -58,7 +72,7 @@ final class OpenAiClient {
 
     HttpRequest request = request("/embeddings")
         .timeout(Duration.ofSeconds(30))
-        .POST(HttpRequest.BodyPublishers.ofString(Json.stringify(body), StandardCharsets.UTF_8))
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
     HttpResponse<String> response = http.send(
         request,
@@ -66,19 +80,20 @@ final class OpenAiClient {
     );
     ensureSuccess(response.statusCode(), response.body());
 
-    Map<String, Object> payload = Json.object(Json.parse(response.body()));
-    List<Object> data = Json.array(payload.get("data"));
+    JsonNode data = objectMapper.readTree(response.body()).path("data");
+    if (!data.isArray()) throw new IOException("The embedding API returned invalid data");
     List<double[]> result = new ArrayList<>();
     for (int index = 0; index < data.size(); index++) result.add(null);
-    for (Object item : data) {
-      Map<String, Object> embeddingItem = Json.object(item);
-      int index = (int) Json.number(embeddingItem.get("index"));
-      List<Object> values = Json.array(embeddingItem.get("embedding"));
+    for (JsonNode item : data) {
+      int index = item.path("index").asInt(-1);
+      JsonNode values = item.path("embedding");
+      if (index < 0 || index >= result.size() || !values.isArray()) {
+        throw new IOException("The embedding API returned an invalid vector entry");
+      }
       double[] vector = new double[values.size()];
       for (int coordinate = 0; coordinate < values.size(); coordinate++) {
-        vector[coordinate] = Json.number(values.get(coordinate));
+        vector[coordinate] = values.get(coordinate).asDouble();
       }
-      if (index < 0 || index >= result.size()) throw new IOException("Invalid embedding index: " + index);
       result.set(index, vector);
     }
     if (result.stream().anyMatch(value -> value == null)) {
@@ -87,13 +102,10 @@ final class OpenAiClient {
     return List.copyOf(result);
   }
 
-  void streamAnswer(
-      String instructions,
-      String input,
-      TextSink sink
-  ) throws IOException, InterruptedException {
+  public void streamAnswer(String instructions, String input, TextSink sink)
+      throws IOException, InterruptedException {
     Map<String, Object> body = new LinkedHashMap<>();
-    body.put("model", config.chatModel());
+    body.put("model", properties.chatModel());
     body.put("store", false);
     body.put("stream", true);
     body.put("stream_options", Map.of("include_obfuscation", false));
@@ -105,12 +117,15 @@ final class OpenAiClient {
     HttpRequest request = request("/responses")
         .timeout(Duration.ofSeconds(40))
         .header("Accept", "text/event-stream")
-        .POST(HttpRequest.BodyPublishers.ofString(Json.stringify(body), StandardCharsets.UTF_8))
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
     HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
       try (InputStream inputStream = response.body()) {
-        ensureSuccess(response.statusCode(), new String(inputStream.readAllBytes(), StandardCharsets.UTF_8));
+        ensureSuccess(
+            response.statusCode(),
+            new String(inputStream.readAllBytes(), StandardCharsets.UTF_8)
+        );
       }
     }
 
@@ -144,71 +159,60 @@ final class OpenAiClient {
 
   private void dispatchEvent(String data, StreamState state, TextSink sink) throws IOException {
     if (data.isBlank() || data.equals("[DONE]")) return;
-    Map<String, Object> event;
+    JsonNode event;
     try {
-      event = Json.object(Json.parse(data));
+      event = objectMapper.readTree(data);
     } catch (RuntimeException error) {
       throw new IOException("Could not parse an OpenAI stream event", error);
     }
 
-    String type = event.get("type") instanceof String value ? value : "";
+    String type = event.path("type").asString("");
     switch (type) {
       case "response.output_text.delta" -> {
-        String delta = event.get("delta") instanceof String value ? value : "";
+        String delta = event.path("delta").asString("");
         if (!delta.isEmpty()) {
           state.receivedText = true;
           sink.accept(delta);
         }
       }
-      case "response.output_text.done" -> {
-        if (event.get("text") instanceof String text) state.completedText = text;
-      }
+      case "response.output_text.done" -> state.completedText = event.path("text").asString(null);
       case "response.failed", "error" -> throw new IOException(extractError(event));
       default -> {
-        // Other lifecycle events do not contain user-visible answer text.
+        // Lifecycle events without user-visible answer text are intentionally ignored.
       }
     }
   }
 
   private HttpRequest.Builder request(String path) {
-    URI uri = URI.create(config.openAiBaseUrl().toString() + path);
-    return HttpRequest.newBuilder(uri)
-        .header("Authorization", "Bearer " + config.apiKey())
+    return HttpRequest.newBuilder(URI.create(baseUrl + path))
+        .header("Authorization", "Bearer " + properties.apiKey())
         .header("Content-Type", "application/json")
-        .header("User-Agent", "local-rag-help-java/0.1.0");
+        .header("User-Agent", "spring-rag-help/0.2.0");
   }
 
-  private static void ensureSuccess(int status, String body) throws IOException {
+  private void ensureSuccess(int status, String body) throws IOException {
     if (status >= 200 && status < 300) return;
     String detail = "OpenAI API returned HTTP " + status;
     try {
-      Map<String, Object> root = Json.object(Json.parse(body));
-      Object rawError = root.get("error");
-      if (rawError instanceof Map<?, ?>) {
-        Object message = Json.object(rawError).get("message");
-        if (message instanceof String text && !text.isBlank()) detail += ": " + text;
-      }
+      String message = objectMapper.readTree(body).path("error").path("message").asString("");
+      if (!message.isBlank()) detail += ": " + message;
     } catch (RuntimeException ignored) {
       // Do not include an unstructured remote response in logs or client errors.
     }
     throw new IOException(detail);
   }
 
-  private static String extractError(Map<String, Object> event) {
-    Object rawError = event.get("error");
-    if (rawError instanceof Map<?, ?>) {
-      Object message = Json.object(rawError).get("message");
-      if (message instanceof String text && !text.isBlank()) return text;
-    }
-    Object rawResponse = event.get("response");
-    if (rawResponse instanceof Map<?, ?>) {
-      Object responseError = Json.object(rawResponse).get("error");
-      if (responseError instanceof Map<?, ?>) {
-        Object message = Json.object(responseError).get("message");
-        if (message instanceof String text && !text.isBlank()) return text;
-      }
-    }
-    return "The OpenAI response stream failed";
+  private static String extractError(JsonNode event) {
+    String message = event.path("error").path("message").asString("");
+    if (!message.isBlank()) return message;
+    message = event.path("response").path("error").path("message").asString("");
+    return message.isBlank() ? "The OpenAI response stream failed" : message;
+  }
+
+  private static String stripTrailingSlash(String value) {
+    String result = value.trim();
+    while (result.endsWith("/")) result = result.substring(0, result.length() - 1);
+    return result;
   }
 
   private static final class StreamState {

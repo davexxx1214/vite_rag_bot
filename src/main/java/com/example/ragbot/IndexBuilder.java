@@ -1,35 +1,53 @@
 package com.example.ragbot;
 
+import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
-final class IndexBuilder {
+@Component
+public class IndexBuilder {
+  private static final Logger LOGGER = LoggerFactory.getLogger(IndexBuilder.class);
   private static final Pattern HEADING = Pattern.compile("^#{2,3}\\s+(.+)$");
   private static final int MAX_CHARACTERS = 1_800;
 
-  private IndexBuilder() {}
+  private final RagProperties properties;
+  private final HelpDocumentService helpDocuments;
+  private final OpenAiClient openAi;
+  private final ObjectMapper objectMapper;
 
-  static void build(
-      Path projectRoot,
-      AppConfig config,
-      List<HelpDoc> docs,
-      OpenAiClient openAi
-  ) throws IOException, InterruptedException {
+  public IndexBuilder(
+      RagProperties properties,
+      HelpDocumentService helpDocuments,
+      OpenAiClient openAi,
+      ObjectMapper objectMapper
+  ) {
+    this.properties = properties;
+    this.helpDocuments = helpDocuments;
+    this.openAi = openAi;
+    this.objectMapper = objectMapper;
+  }
+
+  public void build() throws IOException, InterruptedException {
+    List<HelpDoc> docs = helpDocuments.documents();
     List<ChunkDraft> drafts = docs.stream().flatMap(doc -> chunkDocument(doc).stream()).toList();
     if (drafts.isEmpty()) throw new IllegalStateException("No document chunks were generated");
 
-    System.out.printf("Embedding %d chunks from %d documents...%n", drafts.size(), docs.size());
+    LOGGER.info("Embedding {} chunks from {} documents", drafts.size(), docs.size());
     List<String> inputs = drafts.stream()
         .map(chunk -> chunk.title() + "\n" + chunk.section() + "\n" + chunk.content())
         .toList();
-    List<double[]> embeddings = openAi.embedTexts(inputs, config.embeddingModel());
+    List<double[]> embeddings = openAi.embedTexts(inputs, properties.embeddingModel());
 
     List<RagChunk> chunks = new ArrayList<>();
     for (int index = 0; index < drafts.size(); index++) {
@@ -45,29 +63,44 @@ final class IndexBuilder {
       ));
     }
 
-    RagIndex ragIndex = new RagIndex(
+    RagIndexDocument document = new RagIndexDocument(
         1,
         Instant.now().toString(),
-        config.embeddingModel(),
-        chunks.getFirst().embedding().length,
+        properties.embeddingModel(),
+        chunks.getFirst().embeddingView().length,
         chunks
     );
-    Path outputPath = projectRoot.resolve("data").resolve("rag-index.json");
-    Files.createDirectories(outputPath.getParent());
-    Files.writeString(
-        outputPath,
-        Json.stringify(ragIndex.toMap()) + "\n",
-        StandardCharsets.UTF_8
-    );
-    System.out.println("Wrote " + outputPath);
-    System.out.printf(
-        "Model: %s; dimensions: %d%n",
-        ragIndex.embeddingModel(),
-        ragIndex.dimensions()
+    writeAtomically(properties.indexPath().toAbsolutePath().normalize(), document);
+    LOGGER.info(
+        "Wrote {} using {} dimensions from model {}",
+        properties.indexPath(),
+        document.dimensions(),
+        document.embeddingModel()
     );
   }
 
-  private static List<ChunkDraft> chunkDocument(HelpDoc doc) {
+  private void writeAtomically(Path output, RagIndexDocument document) throws IOException {
+    Path parent = output.getParent();
+    if (parent != null) Files.createDirectories(parent);
+    Path temporary = Files.createTempFile(parent, "rag-index-", ".json.tmp");
+    try {
+      objectMapper.writeValue(temporary.toFile(), document);
+      try {
+        Files.move(
+            temporary,
+            output,
+            StandardCopyOption.ATOMIC_MOVE,
+            StandardCopyOption.REPLACE_EXISTING
+        );
+      } catch (AtomicMoveNotSupportedException ignored) {
+        Files.move(temporary, output, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } finally {
+      Files.deleteIfExists(temporary);
+    }
+  }
+
+  static List<ChunkDraft> chunkDocument(HelpDoc doc) {
     List<Section> sections = new ArrayList<>();
     String heading = "Overview";
     StringBuilder buffer = new StringBuilder();
@@ -99,7 +132,7 @@ final class IndexBuilder {
         ));
       }
     }
-    return chunks;
+    return List.copyOf(chunks);
   }
 
   private static void flushSection(
@@ -124,7 +157,10 @@ final class IndexBuilder {
       }
       if (paragraph.length() > MAX_CHARACTERS) {
         for (int start = 0; start < paragraph.length(); start += MAX_CHARACTERS) {
-          String part = paragraph.substring(start, Math.min(start + MAX_CHARACTERS, paragraph.length())).trim();
+          String part = paragraph.substring(
+              start,
+              Math.min(start + MAX_CHARACTERS, paragraph.length())
+          ).trim();
           if (!part.isEmpty()) chunks.add(part);
         }
       } else {
@@ -132,13 +168,14 @@ final class IndexBuilder {
         current.append(paragraph);
       }
     }
-    if (!current.toString().trim().isEmpty()) chunks.add(current.toString().trim());
-    return chunks;
+    String remaining = current.toString().trim();
+    if (!remaining.isEmpty()) chunks.add(remaining);
+    return List.copyOf(chunks);
   }
 
   private record Section(String heading, String content) {}
 
-  private record ChunkDraft(
+  record ChunkDraft(
       String id,
       String slug,
       String title,

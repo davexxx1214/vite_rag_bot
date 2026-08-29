@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: local-rag-help-center
+  config:
+    import: optional:file:./config.yaml
+  mvc:
+    async:
+      request-timeout: 45s
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: ${port:3000}
+  shutdown: graceful
+  error:
+    include-message: never
+
+rag:
+  api-key: ${OPENAI_API_KEY:${api_key:}}
+  chat-model: ${chat_model:gpt-5-mini}
+  embedding-model: ${embedding_model:text-embedding-3-small}
+  openai-base-url: ${OPENAI_BASE_URL:${openai_base_url:https://api.openai.com/v1}}
+  docs-directory: ${RAG_DOCS_DIRECTORY:./docs}
+  index-path: ${RAG_INDEX_PATH:./data/rag-index.json}
+  build-index: false

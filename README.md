@@ -1,15 +1,17 @@
 # Local RAG Help Center
 
-A lightweight local RAG demonstration with a React + MUI + Vite frontend and a Java 21 backend. Help documents are stored as Markdown, embedded into a generated JSON file, searched in Java memory, and supplied to an OpenAI model as grounded context.
+A lightweight local RAG demonstration with a React + MUI + Vite frontend and a Spring Boot 4 / Java 21 backend. Help documents are stored as Markdown, embedded into a generated JSON file, searched in Java memory, and supplied to an OpenAI model as grounded context.
 
-The Java service uses only JDK APIs: the built-in HTTP server, HTTP client, virtual threads, and a small project-local JSON parser. It does not require Spring Boot, Maven, Gradle, or a Node.js server runtime.
+The backend is a standard Maven project. Spring Boot provides the HTTP API, configuration, validation, static-file hosting, and an executable production JAR. Vector search stays deliberately small: the generated JSON index is loaded into memory and searched with cosine similarity, without a vector database or a Node.js server runtime.
 
 Chat responses use an NDJSON stream: the browser receives retrieval status and sources first, then renders model text as it arrives. Assistant messages support GitHub-Flavored Markdown and are sanitized with DOMPurify before rendering. The OpenAI API key remains in the Java process and is never exposed to Vite.
 
 ## Requirements
 
-- JDK 21 or newer (`java`, `javac`, and `jar` on `PATH`)
+- JDK 21 or newer (`java` on `PATH`)
 - pnpm 10.33.2
+
+Maven does not need to be installed globally; the checked-in Maven Wrapper downloads the pinned Maven version on first use.
 
 ## Run locally
 
@@ -28,7 +30,7 @@ pnpm build
 pnpm start
 ```
 
-`pnpm build` builds the Vite frontend and compiles the Java service into `java-dist/ragbot.jar`. The Java service then serves both the API and the files in `dist/` on the configured port, which defaults to 3000.
+`pnpm build` builds the Vite frontend and packages it with the Spring Boot service into `target/ragbot.jar`. The executable JAR serves both the API and the embedded frontend on the configured port, which defaults to 3000.
 
 Use `pnpm build:all` to regenerate `data/rag-index.json` before building everything. Use `pnpm build` when the documents and existing vector index have not changed, avoiding an unnecessary embedding request.
 
@@ -36,7 +38,8 @@ Use `pnpm build:all` to regenerate `data/rag-index.json` before building everyth
 
 ```sh
 pnpm typecheck       # Type-check the frontend
-pnpm build:server    # Compile the Java service and create the JAR
+pnpm test:server     # Run the Spring Boot/Maven tests
+pnpm build:server    # Test and package the executable Spring Boot JAR
 pnpm server          # Build and run only the Java service
 pnpm build:index     # Rebuild the local vector index through Java
 pnpm build           # Build frontend and Java service
@@ -46,7 +49,10 @@ pnpm build           # Build frontend and Java service
 
 - `docs/`: local Markdown knowledge base.
 - `data/rag-index.json`: generated local vector index.
-- `java-server/`: zero-framework Java HTTP, RAG retrieval, OpenAI client, and index builder.
+- `src/main/java/`: Spring Boot API, RAG retrieval, OpenAI client, and index builder.
+- `src/main/resources/`: Spring Boot configuration.
+- `src/test/java/`: Maven/JUnit backend tests.
 - `src/`: React + MUI Help Center and Markdown-enabled chat UI.
+- `pom.xml`, `mvnw`, `.mvn/`: Maven build and pinned wrapper.
 
 The bundled Alpaca pages are concise adaptations for demonstration and link to their original documentation.
