@@ -5,12 +5,15 @@
   "packageManager": "pnpm@10.33.2",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch server/index.ts",
-    "build:index": "tsx scripts/build-index.ts",
-    "build": "vite build && tsc -p tsconfig.server.json",
+    "dev": "pnpm build:server && concurrently --kill-others --names JAVA,WEB \"java --add-modules jdk.httpserver -jar java-dist/ragbot.jar --port=3001\" \"vite\"",
+    "build:index": "pnpm build:server && java --add-modules jdk.httpserver -jar java-dist/ragbot.jar --build-index",
+    "build:server": "javac --release 21 --add-modules jdk.httpserver -Xlint:all -Werror -encoding UTF-8 -d java-dist/classes @java-server/sources.txt && jar --create --file java-dist/ragbot.jar --main-class com.example.ragbot.Main -C java-dist/classes .",
+    "build": "vite build && pnpm build:server",
     "build:all": "pnpm run build:index && pnpm run build",
-    "start": "node server-dist/index.js",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json --noEmit"
+    "server": "pnpm build:server && java --add-modules jdk.httpserver -jar java-dist/ragbot.jar",
+    "server:dev": "pnpm build:server && java --add-modules jdk.httpserver -jar java-dist/ragbot.jar --port=3001",
+    "start": "java --add-modules jdk.httpserver -jar java-dist/ragbot.jar",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -18,20 +21,15 @@
     "@mui/icons-material": "^9.3.1",
     "@mui/material": "^9.3.1",
     "dompurify": "^3.4.14",
-    "express": "^5.2.1",
     "marked": "^18.0.11",
-    "openai": "^7.5.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "yaml": "^2.9.0"
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6",
-    "@types/node": "^26.3.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.0",
-    "tsx": "^4.23.12",
+    "concurrently": "^9.2.1",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
   }

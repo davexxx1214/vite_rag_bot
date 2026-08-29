@@ -1,34 +1,52 @@
 # Local RAG Help Center
 
-A minimal React + MUI + Vite + TypeScript + Node.js demonstration. Help documents are stored locally as Markdown, embedded into a generated JSON file, searched in Node memory, and supplied to an OpenAI model as grounded context.
+A lightweight local RAG demonstration with a React + MUI + Vite frontend and a Java 21 backend. Help documents are stored as Markdown, embedded into a generated JSON file, searched in Java memory, and supplied to an OpenAI model as grounded context.
 
-Chat responses use an NDJSON stream: the browser receives retrieval status and sources first, then renders model text as it arrives. Assistant messages support GitHub-Flavored Markdown and are sanitized with DOMPurify before rendering. OpenAI requests have bounded server-side timeouts, and the browser cancels requests that exceed 45 seconds or when the chat panel is closed.
+The Java service uses only JDK APIs: the built-in HTTP server, HTTP client, virtual threads, and a small project-local JSON parser. It does not require Spring Boot, Maven, Gradle, or a Node.js server runtime.
+
+Chat responses use an NDJSON stream: the browser receives retrieval status and sources first, then renders model text as it arrives. Assistant messages support GitHub-Flavored Markdown and are sanitized with DOMPurify before rendering. The OpenAI API key remains in the Java process and is never exposed to Vite.
+
+## Requirements
+
+- JDK 21 or newer (`java`, `javac`, and `jar` on `PATH`)
+- pnpm 10.33.2
 
 ## Run locally
 
 1. Copy `config.yaml.example` to `config.yaml`, then set `api_key: ...` in the local file.
-2. Install dependencies with `pnpm install`.
-3. Generate the vector index with `pnpm build:index`.
-4. Start development mode with `pnpm dev`.
+2. Install frontend dependencies with `pnpm install`.
+3. Generate the vector index with `pnpm build:index` when the documents change. The repository already contains a demo index.
+4. Start both development services with `pnpm dev`.
 5. Open `http://localhost:3000`.
 
-The key stays in the Node process. `config.yaml` is ignored by Git and is never served by Vite.
+In development, Vite runs on port 3000 and proxies `/api` to the Java service on port 3001. Closing either process stops both. `config.yaml` is ignored by Git and is never served by either server.
 
 ## Production build
 
 ```sh
-pnpm build:all
-NODE_ENV=production pnpm start
+pnpm build
+pnpm start
 ```
 
-`build:all` regenerates `data/rag-index.json`, builds the Vite client, and compiles the Node server. Use `pnpm build` when the documents and existing vector index have not changed, avoiding an unnecessary embedding request.
+`pnpm build` builds the Vite frontend and compiles the Java service into `java-dist/ragbot.jar`. The Java service then serves both the API and the files in `dist/` on the configured port, which defaults to 3000.
+
+Use `pnpm build:all` to regenerate `data/rag-index.json` before building everything. Use `pnpm build` when the documents and existing vector index have not changed, avoiding an unnecessary embedding request.
+
+## Useful commands
+
+```sh
+pnpm typecheck       # Type-check the frontend
+pnpm build:server    # Compile the Java service and create the JAR
+pnpm server          # Build and run only the Java service
+pnpm build:index     # Rebuild the local vector index through Java
+pnpm build           # Build frontend and Java service
+```
 
 ## Project layout
 
 - `docs/`: local Markdown knowledge base.
-- `scripts/build-index.ts`: section-aware chunking and embedding generation.
 - `data/rag-index.json`: generated local vector index.
-- `server/`: Help document API, in-memory vector retrieval, and AI response endpoint.
+- `java-server/`: zero-framework Java HTTP, RAG retrieval, OpenAI client, and index builder.
 - `src/`: React + MUI Help Center and Markdown-enabled chat UI.
 
 The bundled Alpaca pages are concise adaptations for demonstration and link to their original documentation.
