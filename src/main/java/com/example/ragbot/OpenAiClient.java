@@ -187,7 +187,7 @@ public class OpenAiClient {
     return HttpRequest.newBuilder(URI.create(baseUrl + path))
         .header("Authorization", "Bearer " + properties.apiKey())
         .header("Content-Type", "application/json")
-        .header("User-Agent", "spring-rag-help/0.2.0");
+        .header("User-Agent", "spring-rag-help/0.3.0");
   }
 
   private void ensureSuccess(int status, String body) throws IOException {

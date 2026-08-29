@@ -13,7 +13,7 @@
 
   <groupId>com.example</groupId>
   <artifactId>ragbot</artifactId>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
   <name>Local RAG Help Center</name>
   <description>Spring Boot and React demonstration of a lightweight local JSON RAG service.</description>
 
