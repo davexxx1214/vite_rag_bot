@@ -95,7 +95,16 @@ const theme = createTheme({
 marked.setOptions({ gfm: true, breaks: true });
 
 function newId() {
-  return crypto.randomUUID();
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const values = crypto.getRandomValues(new Uint32Array(2));
+    return `message-${Date.now()}-${values[0].toString(16)}${values[1].toString(16)}`;
+  }
+
+  return `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function SafeMarkdown({ content, variant }: { content: string; variant: "doc" | "message" }) {
