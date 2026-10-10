@@ -2,9 +2,30 @@
 api_key: <your-openai-api-key>
 
 # Optional overrides
-chat_model: gpt-5-mini
+chat_model: gpt-6-luna
+# Alternative: gpt-5-mini
 embedding_model: text-embedding-3-small
 port: 3000
 
 # Optional OpenAI-compatible API base URL
 # openai_base_url: https://api.openai.com/v1
+
+# Optional agent settings (same keys as application.yaml)
+# agent:
+#   memory-directory: ./data/agent
+#   context-window-tokens: 0  # Detect model defaults; override for smaller proxy windows
+#   input-budget-tokens: 32000
+#   compact-at-tokens: 25000
+#   compact-target-tokens: 12000
+#   keep-recent-tokens: 6000
+#   memory-budget-tokens: 1800
+#   request-timeout-seconds: 240 # Total agent deadline; keep HTTP/browser timeouts longer
+#   reasoning-effort: low
+#   history:
+#     archive-after-days: 30      # Inactive sessions: gzip transcript and large payloads
+#     retention-days: 365         # Based on last activity, including archived sessions
+#     delete-expired: true        # false keeps expired sessions; quota still applies
+#     user-quota-bytes: 524288000 # 500 MiB, including indexes and memory backups
+#     tool-inline-chars: 8192
+#     page-size: 50
+#     maintenance-interval-seconds: 3600

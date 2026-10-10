@@ -1,6 +1,7 @@
 package com.example.ragbot;
 
 import java.util.Map;
+import java.io.IOException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -18,5 +19,11 @@ public class ApiExceptionHandler {
   public ResponseEntity<Map<String, String>> malformedJson() {
     return ResponseEntity.status(HttpStatus.BAD_REQUEST)
         .body(Map.of("error", "Request body must be valid JSON"));
+  }
+
+  @ExceptionHandler({IOException.class, InterruptedException.class})
+  public ResponseEntity<Map<String, String>> agentStorageOrModelError(Exception error) {
+    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+        .body(Map.of("error", HelpController.failureMessage(error)));
   }
 }

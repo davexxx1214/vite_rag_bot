@@ -31,14 +31,16 @@ public class OpenAiClient {
   private final ObjectMapper objectMapper;
   private final HttpClient http;
   private final String baseUrl;
+  private final AgentProperties agentProperties;
 
-  public OpenAiClient(RagProperties properties, ObjectMapper objectMapper) {
+  public OpenAiClient(RagProperties properties, AgentProperties agentProperties, ObjectMapper objectMapper) {
     if (properties.apiKey().isBlank()) {
       throw new IllegalStateException(
           "Missing OpenAI API key. Set api_key in config.yaml or OPENAI_API_KEY."
       );
     }
     this.properties = properties;
+    this.agentProperties = agentProperties;
     this.objectMapper = objectMapper;
     this.http = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
@@ -102,59 +104,105 @@ public class OpenAiClient {
     return List.copyOf(result);
   }
 
-  public void streamAnswer(String instructions, String input, TextSink sink)
-      throws IOException, InterruptedException {
-    Map<String, Object> body = new LinkedHashMap<>();
-    body.put("model", properties.chatModel());
-    body.put("store", false);
+  public record ModelResponse(List<JsonNode> output, String text, int inputTokens, int outputTokens) {
+    public List<JsonNode> calls() {
+      return output.stream().filter(item -> item.path("type").asString("").equals("function_call")).toList();
+    }
+  }
+
+  public ModelResponse respond(
+      String instructions, List<JsonNode> input, List<Map<String, Object>> tools,
+      boolean allowTools, TextSink sink, RunControl control
+  ) throws IOException, InterruptedException {
+    Map<String, Object> body = responseBody(instructions, input, agentProperties.maxOutputTokens());
+    body.put("tools", tools);
+    body.put("tool_choice", allowTools ? "auto" : "none");
+    body.put("parallel_tool_calls", false);
     body.put("stream", true);
     body.put("stream_options", Map.of("include_obfuscation", false));
-    body.put("max_output_tokens", 1_200);
-    body.put("reasoning", Map.of("effort", "minimal"));
-    body.put("instructions", instructions);
-    body.put("input", input);
 
     HttpRequest request = request("/responses")
-        .timeout(Duration.ofSeconds(40))
+        .timeout(control.timeout())
         .header("Accept", "text/event-stream")
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
     HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-    if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      try (InputStream inputStream = response.body()) {
-        ensureSuccess(
-            response.statusCode(),
-            new String(inputStream.readAllBytes(), StandardCharsets.UTF_8)
-        );
+    try (InputStream inputStream = response.body()) {
+      control.attach(inputStream);
+      try {
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+          ensureSuccess(response.statusCode(), new String(inputStream.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        StreamState state = new StreamState();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+          StringBuilder data = new StringBuilder();
+          String line;
+          while ((line = reader.readLine()) != null) {
+            control.check();
+            if (line.isEmpty()) {
+              dispatchEvent(data.toString(), state, sink);
+              data.setLength(0);
+            } else if (line.startsWith("data:")) {
+              if (!data.isEmpty()) data.append('\n');
+              data.append(line.substring(5).stripLeading());
+            }
+          }
+          if (!data.isEmpty()) dispatchEvent(data.toString(), state, sink);
+        }
+        if (state.completed == null) throw new IOException("OpenAI stream ended without a completed response");
+        ModelResponse result = parseResponse(state.completed);
+        if (!state.receivedText && !result.text().isBlank()) sink.accept(result.text());
+        return result;
+      } finally {
+        control.detach();
       }
     }
+  }
 
-    StreamState state = new StreamState();
-    try (
-        InputStream inputStream = response.body();
-        BufferedReader reader = new BufferedReader(
-            new InputStreamReader(inputStream, StandardCharsets.UTF_8)
-        )
-    ) {
-      StringBuilder data = new StringBuilder();
-      String line;
-      while ((line = reader.readLine()) != null) {
-        if (line.isEmpty()) {
-          dispatchEvent(data.toString(), state, sink);
-          data.setLength(0);
-        } else if (line.startsWith("data:")) {
-          if (!data.isEmpty()) data.append('\n');
-          data.append(line.substring(5).stripLeading());
+  public String summarize(String instructions, String input, int maxTokens, RunControl control)
+      throws IOException, InterruptedException {
+    Map<String, Object> body = responseBody(instructions,
+        List.of(objectMapper.valueToTree(Map.of("role", "user", "content", input))), maxTokens);
+    body.put("stream", false);
+    HttpRequest request = request("/responses").timeout(control.timeout())
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build();
+    HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    ensureSuccess(response.statusCode(), response.body());
+    return parseResponse(objectMapper.readTree(response.body())).text();
+  }
+
+  private Map<String, Object> responseBody(String instructions, List<JsonNode> input, int maxTokens) {
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("model", properties.chatModel());
+    body.put("store", false);
+    body.put("max_output_tokens", maxTokens);
+    body.put("reasoning", Map.of("effort", agentProperties.reasoningEffort()));
+    body.put("include", List.of("reasoning.encrypted_content"));
+    body.put("instructions", instructions);
+    body.put("input", input);
+
+    return body;
+  }
+
+  private ModelResponse parseResponse(JsonNode response) throws IOException {
+    if (!response.path("status").asString("").equals("completed") || !response.path("output").isArray()) {
+      throw new IOException("The model response was incomplete or invalid");
+    }
+    List<JsonNode> output = new ArrayList<>();
+    StringBuilder text = new StringBuilder();
+    for (JsonNode item : response.path("output")) {
+      output.add(item.deepCopy());
+      if (item.path("type").asString("").equals("message")) {
+        for (JsonNode part : item.path("content")) {
+          String type = part.path("type").asString("");
+          if (type.equals("output_text")) text.append(part.path("text").asString(""));
+          if (type.equals("refusal")) text.append(part.path("refusal").asString(""));
         }
       }
-      if (!data.isEmpty()) dispatchEvent(data.toString(), state, sink);
     }
-
-    if (!state.receivedText && state.completedText != null && !state.completedText.isBlank()) {
-      sink.accept(state.completedText);
-      state.receivedText = true;
-    }
-    if (!state.receivedText) throw new IOException("The model returned no answer text");
+    JsonNode usage = response.path("usage");
+    return new ModelResponse(List.copyOf(output), text.toString(),
+        usage.path("input_tokens").asInt(0), usage.path("output_tokens").asInt(0));
   }
 
   private void dispatchEvent(String data, StreamState state, TextSink sink) throws IOException {
@@ -175,7 +223,8 @@ public class OpenAiClient {
           sink.accept(delta);
         }
       }
-      case "response.output_text.done" -> state.completedText = event.path("text").asString(null);
+      case "response.completed" -> state.completed = event.path("response");
+      case "response.incomplete" -> throw new IOException("The model exhausted its output budget");
       case "response.failed", "error" -> throw new IOException(extractError(event));
       default -> {
         // Lifecycle events without user-visible answer text are intentionally ignored.
@@ -192,14 +241,16 @@ public class OpenAiClient {
 
   private void ensureSuccess(int status, String body) throws IOException {
     if (status >= 200 && status < 300) return;
-    String detail = "OpenAI API returned HTTP " + status;
+    String code = "";
+    String parameter = "";
     try {
-      String message = objectMapper.readTree(body).path("error").path("message").asString("");
-      if (!message.isBlank()) detail += ": " + message;
+      JsonNode error = objectMapper.readTree(body).path("error");
+      code = error.path("code").asString(error.path("type").asString(""));
+      parameter = error.path("param").asString("");
     } catch (RuntimeException ignored) {
-      // Do not include an unstructured remote response in logs or client errors.
+      // Raw remote bodies may contain credentials or request contents; never expose them.
     }
-    throw new IOException(detail);
+    throw new ModelApiException(status, code, parameter);
   }
 
   private static String extractError(JsonNode event) {
@@ -217,6 +268,6 @@ public class OpenAiClient {
 
   private static final class StreamState {
     private boolean receivedText;
-    private String completedText;
+    private JsonNode completed;
   }
 }

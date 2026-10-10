@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createRoot } from "react-dom/client";
 import DOMPurify from "dompurify";
@@ -12,6 +12,11 @@ import {
   CircularProgress,
   CssBaseline,
   Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  MenuItem,
   Fab,
   IconButton,
   Link,
@@ -32,6 +37,8 @@ import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import "./style.css";
+import { useAgentChat } from "./useAgentChat";
+import { AgentActivityPanel } from "./AgentActivityPanel";
 
 type HelpDoc = {
   slug: string;
@@ -40,28 +47,6 @@ type HelpDoc = {
   source: string;
   content: string;
 };
-
-type Source = {
-  citation: string;
-  title: string;
-  section: string;
-  source: string;
-  score: number;
-};
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  sources?: Source[];
-};
-
-type ChatStreamEvent =
-  | { type: "status"; message: string }
-  | { type: "sources"; sources: Source[] }
-  | { type: "delta"; text: string }
-  | { type: "error"; error: string }
-  | { type: "done" };
 
 const colors = {
   ink: "#17211a",
@@ -94,19 +79,6 @@ const theme = createTheme({
 
 marked.setOptions({ gfm: true, breaks: true });
 
-function newId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-
-  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
-    const values = crypto.getRandomValues(new Uint32Array(2));
-    return `message-${Date.now()}-${values[0].toString(16)}${values[1].toString(16)}`;
-  }
-
-  return `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
 function SafeMarkdown({ content, variant }: { content: string; variant: "doc" | "message" }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const html = useMemo(() => {
@@ -130,24 +102,14 @@ function SafeMarkdown({ content, variant }: { content: string; variant: "doc" | 
   );
 }
 
-const initialMessages: ChatMessage[] = [
-  {
-    id: newId(),
-    role: "assistant",
-    content:
-      "Hi! I answer questions using the Help Center documents. Try asking: **What is the difference between paper and live trading?**",
-  },
-];
-
 function App() {
   const [docs, setDocs] = useState<HelpDoc[]>([]);
   const [selectedSlug, setSelectedSlug] = useState("");
   const [docsError, setDocsError] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const chat = useAgentChat();
+  const { messages, submitting } = chat;
   const [input, setInput] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const activeRequest = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -180,116 +142,23 @@ function App() {
     if (chatOpen) messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [chatOpen, messages]);
 
-  useEffect(() => () => activeRequest.current?.abort(), []);
-
-  const updateMessage = useCallback((id: string, patch: Partial<ChatMessage>) => {
-    setMessages((current) =>
-      current.map((message) => (message.id === id ? { ...message, ...patch } : message)),
-    );
-  }, []);
-
   const openChat = () => {
     setChatOpen(true);
     window.setTimeout(() => inputRef.current?.focus(), 80);
   };
 
   const closeChat = () => {
-    activeRequest.current?.abort();
+    chat.cancel();
     setChatOpen(false);
   };
 
   const sendMessage = async (event?: FormEvent) => {
     event?.preventDefault();
     const content = input.trim();
-    if (!content || submitting) return;
-
-    const history = messages.slice(-6).map(({ role, content: messageContent }) => ({
-      role,
-      content: messageContent,
-    }));
-    const thinkingId = newId();
-    setMessages((current) => [
-      ...current,
-      { id: newId(), role: "user", content },
-      { id: thinkingId, role: "assistant", content: "Searching the help documents…" },
-    ]);
+    if (!content || submitting || chat.loading || !chat.sessionId) return;
     setInput("");
-    setSubmitting(true);
-
-    const controller = new AbortController();
-    activeRequest.current = controller;
-    let timedOut = false;
-    const timeout = window.setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, 45_000);
-
-    try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: content, history }),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(payload?.error || "The bot could not answer");
-      }
-      if (!response.body) throw new Error("The server returned no response stream");
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let answer = "";
-      let receivedText = false;
-      let streamDone = false;
-
-      while (!streamDone) {
-        const { done, value } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const streamEvent = JSON.parse(line) as ChatStreamEvent;
-
-          if (streamEvent.type === "status" && !receivedText) {
-            updateMessage(thinkingId, { content: streamEvent.message });
-          } else if (streamEvent.type === "sources") {
-            updateMessage(thinkingId, { sources: streamEvent.sources });
-          } else if (streamEvent.type === "delta") {
-            receivedText = true;
-            answer += streamEvent.text;
-            updateMessage(thinkingId, { content: answer });
-          } else if (streamEvent.type === "error") {
-            throw new Error(streamEvent.error);
-          } else if (streamEvent.type === "done") {
-            streamDone = true;
-          }
-        }
-
-        if (done) break;
-      }
-
-      if (!receivedText) throw new Error("The bot returned an empty answer");
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        updateMessage(thinkingId, {
-          content: timedOut ? "The request timed out. Please try again." : "The request was cancelled.",
-        });
-      } else {
-        updateMessage(thinkingId, {
-          content: error instanceof Error ? `Sorry, ${error.message}.` : "Sorry, something went wrong.",
-        });
-      }
-    } finally {
-      window.clearTimeout(timeout);
-      if (activeRequest.current === controller) activeRequest.current = null;
-      setSubmitting(false);
-      window.setTimeout(() => inputRef.current?.focus(), 0);
-    }
+    await chat.send(content);
+    window.setTimeout(() => inputRef.current?.focus(), 0);
   };
 
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -450,7 +319,8 @@ function App() {
             borderColor: "#d8dfd9",
             borderRadius: 2.25,
             display: "grid",
-            gridTemplateRows: "auto 1fr auto auto",
+            gridTemplateColumns: "minmax(0, 1fr)",
+            gridTemplateRows: "auto auto 1fr auto auto",
           }}
         >
           <Box component="header" sx={{ minHeight: 76, p: 1.75, borderBottom: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1.5 }}>
@@ -458,10 +328,10 @@ function App() {
               <AutoAwesomeRoundedIcon fontSize="small" />
             </Avatar>
             <Box sx={{ minWidth: 0, flex: 1 }}>
-              <Typography sx={{ fontSize: 15, fontWeight: 800 }}>Help Bot</Typography>
+              <Typography sx={{ fontSize: 15, fontWeight: 800 }}>Finance Assistant</Typography>
               <Box sx={{ mt: 0.25, display: "flex", alignItems: "center", gap: 0.75, color: "text.secondary" }}>
                 <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: "#23a66b", boxShadow: "0 0 0 3px #ddf4e8" }} />
-                <Typography sx={{ fontSize: 10 }}>Answers from local docs</Typography>
+                <Typography sx={{ fontSize: 10 }}>Help docs, portfolio data & saved preferences</Typography>
               </Box>
             </Box>
             <Tooltip title="Close">
@@ -469,16 +339,51 @@ function App() {
             </Tooltip>
           </Box>
 
+          <Box sx={{ px: 1.75, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <TextField select size="small" label="Demo user" value={chat.users.length ? chat.userId : ""}
+                disabled={submitting || chat.memoryBusy} sx={{ flex: 1, minWidth: 0 }}
+                onChange={event => { setInput(""); chat.setUserId(event.target.value); }}>
+                {chat.users.map(user => <MenuItem key={user.id} value={user.id}>{user.username}</MenuItem>)}
+              </TextField>
+              <Button size="small" disabled={submitting || chat.loading} onClick={() => void chat.selectSession()}>New chat</Button>
+              <Button size="small" disabled={submitting || chat.loading} onClick={() => void chat.openMemory()}>Memory</Button>
+            </Box>
+            {chat.sessions.length > 1 && <TextField select fullWidth size="small" label="Conversation"
+              value={chat.sessionId} disabled={submitting || chat.loading} sx={{ mt: 1.25 }}
+              onChange={event => void chat.selectSession(event.target.value)}>
+              {chat.sessions.map(session => <MenuItem key={session.id} value={session.id}>{session.title}</MenuItem>)}
+            </TextField>}
+            {chat.error && <Typography role="alert" color="error" sx={{ mt: 1, fontSize: 12 }}>{chat.error}</Typography>}
+            {chat.loading && <Typography sx={{ mt: 1, fontSize: 11, color: "text.secondary" }}>Loading conversation…</Typography>}
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mt: 0.5 }}>
+              {chat.sessions.length >= 50 && <Button size="small" disabled={chat.loading || submitting} onClick={() => void chat.loadMoreSessions()}>More conversations</Button>}
+              <Button size="small" disabled={!chat.sessionId || submitting || chat.loading} onClick={() => void chat.exportSession()}>Export chat</Button>
+              <Button size="small" color="error" disabled={!chat.sessionId || submitting || chat.loading} onClick={() => void chat.deleteSession()}>Delete chat</Button>
+            </Box>
+            {chat.storage && chat.storage.bytes >= chat.storage.quotaBytes * 0.9 && <Typography role="alert" color="error" sx={{ fontSize: 12 }}>
+              History storage is nearly full. Export and delete old conversations or increase the storage quota.
+            </Typography>}
+          </Box>
+
           <Box aria-live="polite" sx={{ overflowY: "auto", p: 2.25, bgcolor: "#f7f8f5" }}>
+            {chat.historyOffset > 0 && <Button fullWidth size="small" disabled={chat.historyBusy || submitting}
+              onClick={() => void chat.loadEarlier()}>{chat.historyBusy ? "Loading…" : "Load earlier messages"}</Button>}
             {messages.map((message) => (
               <Box key={message.id} sx={{ mb: 2.5, display: "flex", flexDirection: "column", alignItems: message.role === "user" ? "flex-end" : "flex-start" }}>
                 <Typography sx={{ mx: 0.5, mb: 0.75, color: "#8b948d", fontSize: 9, fontWeight: 800, letterSpacing: ".09em", textTransform: "uppercase" }}>
                   {message.role === "assistant" ? "Help Bot" : "You"}
                 </Typography>
+                {message.role === "assistant" && (message.pending || !!message.activities?.length) &&
+                  <AgentActivityPanel activities={message.activities || []} pending={message.pending}
+                    status={message.status} startedAt={message.startedAt} endedAt={message.endedAt} />}
                 <Paper
                   variant="outlined"
                   sx={{
+                    display: message.pending && !message.content ? "none" : undefined,
                     maxWidth: "91%",
+                    minWidth: 0,
+                    overflowX: "auto",
                     px: 1.75,
                     py: 1.25,
                     borderColor: message.role === "user" ? colors.greenDark : "#dde3dd",
@@ -527,7 +432,7 @@ function App() {
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={handleInputKeyDown}
-              placeholder="Ask about paper trading, authentication…"
+              placeholder="Ask about your portfolios, issuers or the help docs…"
               multiline
               maxRows={4}
               fullWidth
@@ -535,15 +440,36 @@ function App() {
               slotProps={{ htmlInput: { maxLength: 2000 }, input: { disableUnderline: true } }}
               sx={{ "& textarea": { py: 0.8, fontSize: 12, lineHeight: 1.45 } }}
             />
-            <IconButton type="submit" disabled={submitting || !input.trim()} aria-label="Send message" sx={{ width: 38, height: 38, flex: "0 0 auto", borderRadius: 1.25, bgcolor: colors.greenDark, color: "white", "&:hover": { bgcolor: colors.green }, "&.Mui-disabled": { bgcolor: "#b7c1ba", color: "white" } }}>
+            <IconButton type="submit" disabled={submitting || chat.loading || !chat.sessionId || !input.trim()} aria-label="Send message" sx={{ width: 38, height: 38, flex: "0 0 auto", borderRadius: 1.25, bgcolor: colors.greenDark, color: "white", "&:hover": { bgcolor: colors.green }, "&.Mui-disabled": { bgcolor: "#b7c1ba", color: "white" } }}>
               {submitting ? <CircularProgress size={17} color="inherit" /> : <ArrowUpwardRoundedIcon fontSize="small" />}
             </IconButton>
           </Paper>
           <Typography sx={{ mx: 1.75, mb: 1.5, color: "#9aa29c", fontSize: 9, textAlign: "center" }}>
-            Demo answers may be incomplete. Verify details in the source docs.
+            {submitting ? <Button size="small" onClick={chat.cancel}>Stop response</Button>
+              : "Financial values are mock snapshots. Preferences are saved per demo user."}
           </Typography>
         </Paper>
       )}
+      <Dialog open={chat.memoryOpen} onClose={() => !chat.memoryBusy && chat.setMemoryOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Saved memory · {chat.users.find(user => user.id === chat.userId)?.username}</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ mb: 2, fontSize: 13, color: "text.secondary" }}>Review your preferences and stable background. Both share a budget of about {chat.memoryBudget.toLocaleString()} tokens. Current balances and holdings are queried again.</Typography>
+          <TextField fullWidth multiline minRows={5} maxRows={12} label="User preferences" value={chat.memoryDraft}
+            onChange={event => chat.setMemoryDraft(event.target.value)} disabled={chat.memoryBusy}
+            placeholder="Your saved preferences will appear here."
+            slotProps={{ htmlInput: { maxLength: 64000, "aria-label": "Saved memory" } }} />
+          <TextField fullWidth multiline minRows={4} maxRows={10} label="Stable background" value={chat.memoryNotes}
+            onChange={event => chat.setMemoryNotes(event.target.value)} disabled={chat.memoryBusy} sx={{ mt: 2 }}
+            slotProps={{ htmlInput: { maxLength: 64000, "aria-label": "Stable background" } }} />
+          {chat.memoryError && <Typography role="alert" color="error" sx={{ mt: 1 }}>{chat.memoryError}</Typography>}
+        </DialogContent>
+        <DialogActions>
+          <Button color="error" disabled={chat.memoryBusy || !(chat.memoryDraft.trim() || chat.memoryNotes.trim())} onClick={() => void chat.saveMemory(true)}>Clear memory</Button>
+          <Box sx={{ flex: 1 }} />
+          <Button disabled={chat.memoryBusy} onClick={() => chat.setMemoryOpen(false)}>Cancel</Button>
+          <Button variant="contained" disabled={chat.memoryBusy} onClick={() => void chat.saveMemory()}>{chat.memoryBusy ? "Saving…" : "Save"}</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

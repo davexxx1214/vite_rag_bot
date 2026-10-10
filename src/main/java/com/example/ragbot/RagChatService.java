@@ -11,10 +11,6 @@ import org.springframework.stereotype.Service;
 @Service
 @ConditionalOnProperty(name = "rag.build-index", havingValue = "false", matchIfMissing = true)
 public class RagChatService {
-  static final String INSTRUCTIONS = """
-      You are a concise help-center assistant. Answer using only the supplied knowledge-base excerpts. Reply in the same language as the user's current question. Use concise GitHub-Flavored Markdown when it improves readability: short headings, bullet or numbered lists, bold text, inline code, and fenced code blocks. Cite supporting excerpts inline as [S1], [S2], and so on, and keep citation markers outside code formatting. If the excerpts do not contain enough information, say that the local help documents do not cover it. Never invent API behavior, URLs, or trading rules.
-      """.trim();
-
   private static final Logger LOGGER = LoggerFactory.getLogger(RagChatService.class);
   private final RagIndex ragIndex;
   private final OpenAiClient openAi;
@@ -52,23 +48,4 @@ public class RagChatService {
     return new RagRetrieval(context.toString(), List.copyOf(sources));
   }
 
-  public void streamAnswer(
-      RagRetrieval retrieval,
-      List<ChatMessage> history,
-      String message,
-      OpenAiClient.TextSink sink
-  ) throws IOException, InterruptedException {
-    String conversation = history.isEmpty()
-        ? "No earlier messages."
-        : String.join(
-            "\n",
-            history.stream()
-                .map(item -> (item.role().equals("user") ? "User: " : "Assistant: ") + item.content())
-                .toList()
-        );
-    String modelInput = "Knowledge-base excerpts:\n\n" + retrieval.context()
-        + "\n\nRecent conversation:\n" + conversation
-        + "\n\nCurrent user question:\n" + message;
-    openAi.streamAnswer(INSTRUCTIONS, modelInput, sink);
-  }
 }

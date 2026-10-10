@@ -5,7 +5,7 @@ spring:
     import: optional:file:./config.yaml
   mvc:
     async:
-      request-timeout: 45s
+      request-timeout: 270s
   threads:
     virtual:
       enabled: true
@@ -18,9 +18,36 @@ server:
 
 rag:
   api-key: ${OPENAI_API_KEY:${api_key:}}
-  chat-model: ${chat_model:gpt-5-mini}
+  chat-model: ${chat_model:gpt-6-luna}
   embedding-model: ${embedding_model:text-embedding-3-small}
   openai-base-url: ${OPENAI_BASE_URL:${openai_base_url:https://api.openai.com/v1}}
   docs-directory: ${RAG_DOCS_DIRECTORY:./docs}
   index-path: ${RAG_INDEX_PATH:./data/rag-index.json}
   build-index: false
+
+agent:
+  memory-directory: ${AGENT_MEMORY_DIRECTORY:./data/agent}
+  # Leave unset to call this Spring Boot server's actual HTTP port.
+  finance-base-url: ${FINANCE_API_BASE_URL:}
+  input-budget-tokens: 32000
+  compact-at-tokens: 25000
+  compact-target-tokens: 12000
+  keep-recent-tokens: 6000
+  memory-budget-tokens: 1800
+  max-output-tokens: 8000
+  # 0 uses the model defaults; set this for proxies with a smaller window.
+  context-window-tokens: 0
+  max-rounds: 6
+  max-tool-calls-per-round: 8
+  tool-result-tokens: 3000
+  request-timeout-seconds: 240
+  memory-extraction-interval: 3
+  reasoning-effort: low
+  history:
+    archive-after-days: 30
+    retention-days: 365
+    delete-expired: true
+    user-quota-bytes: 524288000
+    tool-inline-chars: 8192
+    page-size: 50
+    maintenance-interval-seconds: 3600

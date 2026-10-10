@@ -15,6 +15,7 @@
     "server:dev": "pnpm build:server && java -jar target/ragbot.jar --server.port=3001",
     "start": "java -jar target/ragbot.jar",
     "test:server": "node scripts/run-maven.mjs --batch-mode test",
+    "test:ui": "node --test tests/agentActivity.test.mjs",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

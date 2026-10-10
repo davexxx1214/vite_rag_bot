@@ -1,11 +1,9 @@
 package com.example.ragbot;
 
-import tools.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.http.HttpTimeoutException;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,9 +19,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import tools.jackson.databind.ObjectMapper;
 
 @RestController
 @RequestMapping("/api")
@@ -33,20 +33,17 @@ public class HelpController {
   private final HelpDocumentService helpDocuments;
   private final RagIndex ragIndex;
   private final RagProperties properties;
-  private final RagChatService chatService;
+  private final AgentService agent;
+  private final MemoryStore store;
   private final ObjectMapper objectMapper;
 
-  public HelpController(
-      HelpDocumentService helpDocuments,
-      RagIndex ragIndex,
-      RagProperties properties,
-      RagChatService chatService,
-      ObjectMapper objectMapper
-  ) {
+  public HelpController(HelpDocumentService helpDocuments, RagIndex ragIndex, RagProperties properties,
+      AgentService agent, MemoryStore store, ObjectMapper objectMapper) {
     this.helpDocuments = helpDocuments;
     this.ragIndex = ragIndex;
     this.properties = properties;
-    this.chatService = chatService;
+    this.agent = agent;
+    this.store = store;
     this.objectMapper = objectMapper;
   }
 
@@ -60,6 +57,7 @@ public class HelpController {
     payload.put("chunks", ragIndex.chunks().size());
     payload.put("embeddingModel", ragIndex.embeddingModel());
     payload.put("chatModel", properties.chatModel());
+    payload.put("agent", true);
     return payload;
   }
 
@@ -69,101 +67,60 @@ public class HelpController {
   }
 
   @PostMapping(value = "/chat", produces = MediaType.APPLICATION_NDJSON_VALUE)
-  public ResponseEntity<StreamingResponseBody> chat(@RequestBody ChatRequest request) {
-    String message = normalizeMessage(request == null ? null : request.message());
-    List<ChatMessage> history = normalizeHistory(request == null ? null : request.history());
-    StreamingResponseBody stream = output -> streamChat(output, message, history);
-
+  public ResponseEntity<StreamingResponseBody> chat(
+      @RequestHeader("X-Mock-User-Id") String userId, @RequestBody ChatRequest request,
+      HttpServletResponse servletResponse
+  ) throws IOException {
+    String message = request == null || request.message() == null ? "" : request.message().trim();
+    if (message.isEmpty() || message.length() > 2_000) {
+      throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Message must contain 1-2,000 characters");
+    }
+    String sessionId = request.sessionId();
+    store.requireExistingSession(userId, sessionId);
+    StreamingResponseBody stream = output -> streamChat(output, servletResponse, userId, sessionId, message);
     HttpHeaders headers = new HttpHeaders();
-    headers.setCacheControl(CacheControl.noCache());
+    headers.setCacheControl(CacheControl.noStore());
     headers.set("X-Accel-Buffering", "no");
     headers.set("X-Content-Type-Options", "nosniff");
     return ResponseEntity.ok().headers(headers).body(stream);
   }
 
-  private void streamChat(OutputStream output, String message, List<ChatMessage> history) {
+  private void streamChat(OutputStream output, HttpServletResponse response, String userId, String sessionId, String message) {
     long startedAt = System.currentTimeMillis();
-    NdjsonWriter writer = new NdjsonWriter(output, objectMapper);
     try {
-      writer.write(Map.of("type", "status", "message", "Searching the help documents…"));
-      RagRetrieval retrieval = chatService.retrieve(message);
-      writer.write(Map.of("type", "sources", "sources", retrieval.sources()));
-      writer.write(Map.of("type", "status", "message", "Generating an answer…"));
-      chatService.streamAnswer(
-          retrieval,
-          history,
-          message,
-          delta -> writer.write(Map.of("type", "delta", "text", delta))
-      );
-      writer.write(Map.of("type", "done"));
-      LOGGER.info("Chat response completed in {}ms", System.currentTimeMillis() - startedAt);
+      agent.run(userId, sessionId, message, event -> write(output, response, event));
+      LOGGER.info("Agent request completed in {}ms", System.currentTimeMillis() - startedAt);
     } catch (Exception error) {
-      String publicMessage = hasCause(error, HttpTimeoutException.class)
-          ? "The AI service timed out. Please try again."
-          : "The AI request failed. Please try again or check the server configuration.";
-      LOGGER.error(
-          "Chat request failed after {}ms: {}",
-          System.currentTimeMillis() - startedAt,
-          error.getMessage()
-      );
+      String publicMessage = failureMessage(error);
+      LOGGER.warn("Agent request failed after {}ms ({}): {}", System.currentTimeMillis() - startedAt,
+          error.getClass().getSimpleName(), publicMessage);
       try {
-        writer.write(Map.of("type", "error", "error", publicMessage));
+        write(output, response, Map.of("type", "error", "error", publicMessage));
       } catch (IOException ignored) {
-        LOGGER.debug("The client disconnected before the chat error could be written");
+        LOGGER.debug("The client disconnected before the error could be delivered");
       }
     }
   }
 
-  private static String normalizeMessage(String rawMessage) {
-    String message = rawMessage == null ? "" : rawMessage.trim();
-    if (message.isEmpty()) throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Message is required");
-    if (message.length() > 2_000) {
-      throw new ApiRequestException(
-          HttpStatus.BAD_REQUEST,
-          "Message must be 2,000 characters or fewer"
-      );
+  static String failureMessage(Exception error) {
+    if (error instanceof ApiRequestException requestError) return requestError.getMessage();
+    if (error instanceof ModelApiException modelError) return modelError.publicMessage();
+    if (error instanceof HttpTimeoutException || "Agent request timed out".equals(error.getMessage())) {
+      return "The model request timed out. Please retry or check the server's connection to the model API.";
     }
-    return message;
+    if (error instanceof InterruptedException || "Agent request cancelled".equals(error.getMessage())) {
+      return "The request was cancelled.";
+    }
+    return "The agent could not complete the request. Please retry or check the server configuration.";
   }
 
-  private static List<ChatMessage> normalizeHistory(List<ChatMessage> rawHistory) {
-    if (rawHistory == null || rawHistory.isEmpty()) return List.of();
-    List<ChatMessage> result = new ArrayList<>();
-    int start = Math.max(0, rawHistory.size() - 6);
-    for (int index = start; index < rawHistory.size(); index++) {
-      ChatMessage item = rawHistory.get(index);
-      if (item == null || item.role() == null || item.content() == null) continue;
-      if (!item.role().equals("user") && !item.role().equals("assistant")) continue;
-      result.add(new ChatMessage(
-          item.role(),
-          item.content().substring(0, Math.min(item.content().length(), 2_000))
-      ));
-    }
-    return List.copyOf(result);
+  private void write(OutputStream output, HttpServletResponse response, Map<String, Object> event) throws IOException {
+    output.write(objectMapper.writeValueAsBytes(event));
+    output.write('\n');
+    output.flush();
+    // Spring 7 may hand StreamingResponseBody a non-flushing stream. Commit each NDJSON event.
+    response.flushBuffer();
   }
 
-  private static boolean hasCause(Throwable error, Class<? extends Throwable> type) {
-    for (Throwable current = error; current != null; current = current.getCause()) {
-      if (type.isInstance(current)) return true;
-    }
-    return false;
-  }
-
-  public record ChatRequest(String message, List<ChatMessage> history) {}
-
-  private static final class NdjsonWriter {
-    private final OutputStream output;
-    private final ObjectMapper objectMapper;
-
-    private NdjsonWriter(OutputStream output, ObjectMapper objectMapper) {
-      this.output = output;
-      this.objectMapper = objectMapper;
-    }
-
-    private void write(Object event) throws IOException {
-      output.write(objectMapper.writeValueAsBytes(event));
-      output.write('\n');
-      output.flush();
-    }
-  }
+  public record ChatRequest(String sessionId, String message) {}
 }
