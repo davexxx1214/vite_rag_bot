@@ -24,6 +24,44 @@ class HistoryLifecycleTest {
   }
 
   @Test
+  void creatingAChatDoesNotArchiveOrDeleteExistingSessions() throws Exception {
+    try (var store = new MemoryStore(AgentTestSupport.properties(root), mapper, new MockFinanceService())) {
+      String expired = store.createSession("user-001");
+      store.append("user-001", expired, turn(1, Instant.now().minus(400, ChronoUnit.DAYS), "old query"));
+      store.createSession("user-001");
+      assertThat(store.turnCount("user-001", expired)).isEqualTo(1);
+      assertThat(root.resolve("users/user-001/sessions/" + expired + "/messages.jsonl")).exists();
+      assertThat(store.maintain("user-001", Instant.now()).get("deleted")).isEqualTo(1);
+    }
+  }
+
+  @Test
+  void incrementalQuotaAccountingIncludesNestedWritesAndPartialFailures() throws Exception {
+    Path user = root.resolve("user"), session = user.resolve("sessions/one"), archive = user.resolve("archive");
+    Files.createDirectories(session); Files.createDirectories(archive);
+    Files.writeString(session.resolve("messages.jsonl"), "12345");
+    Files.writeString(archive.resolve("old.md"), "123");
+    var usage = new HistoryMaintenance.Usage();
+    assertThat(usage.bytes(user)).isEqualTo(8);
+    usage.track(user, session, () -> {
+      Files.writeString(session.resolve("messages.jsonl"), "12345678");
+      Files.writeString(session.resolve("payload.json"), "1234"); return null;
+    });
+    assertThat(usage.bytes(user)).isEqualTo(15);
+    usage.track(user, user, () -> {
+      Files.writeString(user.resolve("USER.md"), "123");
+      usage.track(user, archive, () -> { Files.writeString(archive.resolve("new.md"), "12"); return null; });
+      return null;
+    });
+    assertThat(usage.bytes(user)).isEqualTo(20);
+    assertThatThrownBy(() -> usage.track(user, session, () -> {
+      Files.writeString(session.resolve("partial.json"), "1234"); throw new java.io.IOException("Interrupted write");
+    })).isInstanceOf(java.io.IOException.class);
+    assertThat(usage.bytes(user)).isEqualTo(24);
+    assertThat(usage.bytes(user)).isEqualTo(FileHistory.diskBytes(user));
+  }
+
+  @Test
   void appendPreservesExistingBytesAndPagingNeverLoadsTheEntireTranscript() throws Exception {
     try (var store = new MemoryStore(AgentTestSupport.properties(root), mapper, new MockFinanceService())) {
       String id = store.createSession("user-001");

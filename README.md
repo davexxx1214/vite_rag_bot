@@ -81,8 +81,10 @@ The design follows a small Pi-style loop implemented directly in Java:
 4. Stream the final answer and atomically save the full turn, including tool records.
 
 There are no subprocess agents, shell tools, extra Node service or database dependencies.
-`AgentService` owns the loop; `ToolRegistry` defines schemas and handlers; `ContextManager`
-owns compression/extraction; `MemoryStore` owns files. `FinanceApiClient` makes real HTTP
+`AgentService` owns the loop; `ToolRegistry` dispatches tools; `ContextManager` compresses working
+context; `CoreMemoryManager` updates stable preferences; `MemoryStore` owns file transactions.
+`HistoryMaintenance` owns scheduled archive/retention and incremental quota accounting.
+`FinanceApiClient` makes real HTTP
 requests to this JAR's mock endpoints, automatically using its actual listening port.
 
 | Tool | Purpose |
@@ -99,6 +101,33 @@ All business tool requests inject the current user's username on the server. The
 select another username or an arbitrary URL. Cross-user detail requests return tool errors.
 Different currencies are compared separately; no FX rate or cross-currency difference is invented.
 Issuer responses contain metadata, not financial statements or credit ratings.
+
+### Adding ordinary business tools
+
+Edit `tools.yaml` and restart the JAR to expose an existing read-only backend endpoint. Ordinary
+GET tools require no changes to the Java registry or agent loop. Local `tools.yaml` overrides the
+bundled defaults; when absent, the JAR uses its embedded copy. Set `agent.tools-config` to an
+explicit `file:` or `classpath:` resource to choose another file; a missing explicit file fails startup.
+New backend endpoint implementations and calculated tools such as `compare_portfolios` remain Java.
+
+```yaml
+tools:
+  - name: get_report
+    description: Read a report belonging to the current user.
+    title: Report
+    status: 正在查询报告…
+    method: GET
+    path: /reports/{id}
+    parameters:
+      id: {type: string, description: Report ID}
+      limit: {type: integer, description: Page size, optional: true, query: limit}
+```
+
+Append entries to the existing list to keep the default tools. Parameters support `string`,
+`integer` and `boolean`; optional values use nullable strict schemas. Path parameters must be
+required strings with valid resource IDs. A `query` field maps a parameter to a query-string key.
+The server validates argument types, injects username and bounds tool output as before. Absolute
+URLs, identity overrides, undefined placeholders, duplicate names and non-GET methods fail startup.
 
 ### File memory
 
@@ -139,8 +168,11 @@ bounded batches instead of loading the whole conversation. Large tool outputs ar
 session-owned payload files, with a bounded preview/reference in the transcript. Oversized business
 tool results can be read in chunks using `search_history`; no arbitrary filesystem path is accepted.
 
-Memory, metadata, summaries and completed archive files use atomic replacement. Requests for one user
-are serialized; a competing request gets a conflict. A process lock prevents two JAR instances
+Memory, metadata, summaries and completed archive files use atomic replacement. One run gate per user
+serializes agent runs, manual compaction, memory editing and deletion; competing mutations get a conflict
+(chat streams report a conflict event). File locks are separate and held only for storage operations,
+so reading memory/history and creating another chat do not wait for model/tool HTTP requests.
+A process lock prevents two JAR instances
 from writing the same memory directory. This version is designed for one server instance and
 modest conversation history. Keyword discovery streams compact indexes (including CJK bigrams);
 it is local keyword retrieval, not semantic/vector memory search. At much larger scale a dedicated
@@ -151,8 +183,11 @@ Memory extraction runs after every three successful, unprocessed turns. It only 
 user statements and saves stable facts/preferences. Financial snapshots stay in history and are
 queried again when current data is needed. Explicit `remember` requests save immediately.
 
-History maintenance runs hourly and before creating a conversation; busy users are skipped by
-the scheduled job. Defaults are 30 days since last activity before archiving, 365 days retention,
+History maintenance runs hourly in its own component; creating a conversation never triggers
+archive or retention work. Busy users are skipped by the scheduled job. The file lock is released
+between sessions. Quota totals are initialized once and updated by scanning only the affected
+session or core files on ordinary writes; maintenance and `/storage` reconcile full totals,
+including externally changed files. Defaults are 30 days since last activity before archiving, 365 days retention,
 and 500 MiB per user, counting sessions, indexes, payloads and memory backups. Gzip archives are
 verified byte-for-byte before the raw file is removed. Archived conversations remain searchable,
 readable and exportable; appending to one restores its raw transcript after checking expanded size.
@@ -169,27 +204,43 @@ summary, index and payloads; independently saved core preferences remain until e
 ### Models and context limits
 
 The default is `gpt-6-luna`; set `chat_model: gpt-5-mini` in `config.yaml` to switch.
-Built-in window settings are 1,050,000 and 400,000 tokens respectively. The agent intentionally
+Built-in window settings are 1,050,000 and 400,000 tokens respectively, matching the official
+[GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna) and
+[GPT-5 Mini](https://developers.openai.com/api/docs/models/gpt-5-mini) documentation. The agent intentionally
 uses a smaller working budget to control latency and cost:
 
 | Setting | Default |
 | --- | --- |
-| Maximum estimated input | 32,000 tokens |
-| Start summarizing history | 25,000 tokens |
-| Compression target / recent history allowance | 12,000 / 6,000 tokens |
+| Maximum estimated input | 64,000 tokens |
+| Start summarizing history | 48,000 tokens (75% of effective input cap) |
+| Compression target / recent history allowance | 32,000 / 16,000 tokens |
 | Active long-term memory | 1,800 tokens |
 | One tool result | 3,000 tokens |
 | Maximum model output, including reasoning | 8,000 tokens |
-| Model rounds / tool calls per round | 6 / 8 |
+| Maximum model rounds | 16 |
+| Total executed tool calls / defensive per-round cap | 12 / 8 |
 | Total request deadline | 240 seconds |
+| Time reserved for final synthesis | 40 seconds (query work stops at 200 seconds) |
 
 Input accounting includes instructions, memory, schemas and messages. It uses a conservative
 UTF-8 byte estimate, not an exact tokenizer; actual Responses usage also triggers compression.
 The effective input cap is the lesser of the configured working budget and the model window
-minus output space and a 4,000-token reserve. Oversized active tool work is summarized only
+minus output space and a 4,000-token reserve. Smaller model/proxy windows also lower the compression
+threshold, target and recent-history allowance. Historical summaries have a proportional cap,
+up to 6,000 estimated tokens. Oversized active tool work is summarized only
 between complete call/result groups. Encrypted reasoning is replayed within the active loop;
 transport bytes are not counted as model tokens. Incomplete model responses are recorded as
-failed turns, never as successful answers. The final round disables further tools.
+failed turns, never as successful answers. Tool attempts count even when they fail or need a retry.
+The ordinary API uses `parallel_tool_calls: false`, so at most one call is returned per response,
+as described in [OpenAI Docs](https://developers.openai.com/api/docs/guides/function-calling).
+Budget exhaustion disables further tools and forces an answer from available results. Unexpected
+oversized call batches execute only within both caps; skipped calls receive paired budget errors.
+The query deadline interrupts blocked work and reserves time for one synthesis without tools.
+If synthesis fails or the hard deadline is reached, a local response preserves bounded previews
+of successful results, sources and references to full history. No extra deadline is granted.
+User cancellation and disconnection stop the run without launching recovery model requests.
+Partial answers are marked in the stream and stored as incomplete turns, keeping full tool records
+available in history. The UI labels them clearly and allows a follow-up query in the same chat.
 
 The chat shows live execution steps, including the tool name, bounded query/resource details,
 running/success/failure states and elapsed time. These are server execution events, not model

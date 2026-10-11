@@ -11,7 +11,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -24,7 +23,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
-import java.util.zip.GZIPOutputStream;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -78,7 +76,7 @@ final class FileHistory {
     return decode(mapper.readTree(Files.readString(directory.resolve("session.json"))));
   }
 
-  private void saveMetadata(Path directory, Metadata metadata) throws IOException {
+  void saveMetadata(Path directory, Metadata metadata) throws IOException {
     Map<String, Object> data = new LinkedHashMap<>();
     data.put("id", metadata.id()); data.put("createdAt", metadata.createdAt());
     data.put("updatedAt", metadata.updatedAt()); data.put("title", metadata.title());
@@ -405,51 +403,7 @@ final class FileHistory {
     return new SearchPage(List.copyOf(result), offset, offset + result.size() < total ? offset + result.size() : null, total);
   }
 
-  void archive(Path directory) throws IOException {
-    Metadata meta = info(directory);
-    StringBuilder recap = new StringBuilder("# Historical conversation\nTitle: ").append(meta.title())
-        .append("\nCreated: ").append(meta.createdAt()).append("\nLast activity: ").append(meta.updatedAt())
-        .append("\nTurns: ").append(meta.turnCount()).append("\n\n").append(summary(directory).text());
-    // No additional model call: retain dated query conditions and a few exact historical conclusions.
-    for (var turn : page(directory, Math.max(0, meta.turnCount() - 3), 3, false).turns()) {
-      recap.append("\n\nTurn ").append(turn.index()).append(" at ").append(turn.timestamp())
-          .append("\nQuery: ").append(MemoryStore.excerpt(turn.message(), 500))
-          .append("\nHistorical conclusion: ").append(MemoryStore.excerpt(turn.answer(), 500));
-      for (JsonNode item : turn.output()) if (item.path("type").asString("").equals("function_call"))
-        recap.append("\nTool: ").append(item.path("name").asString()).append(" ")
-            .append(MemoryStore.excerpt(item.path("arguments").asString(), 500));
-    }
-    MemoryStore.writeAtomic(directory.resolve("archive-summary.md"), recap.toString());
-    Path raw = directory.resolve("messages.jsonl");
-    if (Files.exists(raw)) gzipVerified(raw);
-    Path payloads = directory.resolve("payloads");
-    if (Files.isDirectory(payloads)) {
-      try (var paths = Files.list(payloads)) {
-        for (Path file : paths.filter(path -> path.getFileName().toString().endsWith(".json")).toList()) gzipVerified(file);
-      }
-    }
-    saveMetadata(directory, new Metadata(meta.id(), meta.createdAt(), meta.updatedAt(), meta.title(), meta.turnCount(), true));
-    synchronized (reconciled) { reconciled.remove(directory); }
-  }
-
-  private static void gzipVerified(Path raw) throws IOException {
-    Path zip = raw.resolveSibling(raw.getFileName() + ".gz");
-    Path temp = Files.createTempFile(raw.getParent(), ".gzip-", ".tmp");
-    try {
-      try (var output = new GZIPOutputStream(Files.newOutputStream(temp))) { Files.copy(raw, output); }
-      try (var original = Files.newInputStream(raw); var restored = new GZIPInputStream(Files.newInputStream(temp))) {
-        byte[] left = new byte[8192], right = new byte[8192];
-        int n;
-        while ((n = original.read(left)) != -1) {
-          if (restored.readNBytes(right, 0, n) != n || !java.util.Arrays.equals(left, 0, n, right, 0, n))
-            throw new IOException("Archive verification failed; original retained");
-        }
-        if (restored.read() != -1) throw new IOException("Archive verification failed");
-      }
-      Files.move(temp, zip, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-      Files.delete(raw);
-    } finally { Files.deleteIfExists(temp); }
-  }
+  void invalidate(Path directory) { synchronized (reconciled) { reconciled.remove(directory); } }
 
   private void unarchive(Path directory) throws IOException {
     Path raw = directory.resolve("messages.jsonl"), zip = directory.resolve("messages.jsonl.gz");
@@ -470,31 +424,6 @@ final class FileHistory {
       for (Path path : paths.filter(Files::isRegularFile).toList()) total += Files.size(path);
     }
     return total;
-  }
-
-  Map<String, Object> maintain(Path userDirectory, List<Path> directories, Instant now) throws IOException {
-    int archived = 0, deleted = 0;
-    for (Path directory : directories) {
-      Metadata meta = info(directory);
-      Instant updated = Instant.parse(meta.updatedAt());
-      if (properties.deleteExpired() && updated.isBefore(now.minus(properties.retentionDays(), ChronoUnit.DAYS))) {
-        deleteTree(directory); deleted++;
-      } else if (!meta.archived() && updated.isBefore(now.minus(properties.archiveAfterDays(), ChronoUnit.DAYS))) {
-        archive(directory); archived++;
-      }
-    }
-    Path backups = userDirectory.resolve("archive");
-    if (properties.deleteExpired() && Files.isDirectory(backups)) {
-      try (var paths = Files.list(backups)) {
-        for (Path file : paths.filter(Files::isRegularFile).toList()) {
-          if (Files.getLastModifiedTime(file).toInstant().isBefore(now.minus(properties.retentionDays(), ChronoUnit.DAYS))) Files.delete(file);
-        }
-      }
-    }
-    long bytes = diskBytes(userDirectory);
-    return Map.of("archived", archived, "deleted", deleted, "bytes", bytes,
-        "quotaBytes", properties.userQuotaBytes(), "overQuota", bytes >= properties.userQuotaBytes(),
-        "deleteExpired", properties.deleteExpired());
   }
 
   static void deleteTree(Path directory) throws IOException {

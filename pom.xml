@@ -44,6 +44,10 @@
     <finalName>ragbot</finalName>
     <resources>
       <resource>
+        <directory>.</directory>
+        <includes><include>tools.yaml</include></includes>
+      </resource>
+      <resource>
         <directory>src/main/resources</directory>
       </resource>
       <resource>

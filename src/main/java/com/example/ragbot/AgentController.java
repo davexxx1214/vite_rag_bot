@@ -63,7 +63,7 @@ public class AgentController {
     for (MemoryStore.StoredTurn turn : page.turns()) {
       messages.add(Map.of("id", id + "-" + turn.index() + "-user", "role", "user", "content", turn.message()));
       messages.add(Map.of("id", id + "-" + turn.index() + "-assistant", "role", "assistant",
-          "content", turn.answer(), "sources", turn.sources()));
+          "content", turn.answer(), "sources", turn.sources(), "partial", !turn.completed()));
     }
     Map<String, Object> result = new java.util.LinkedHashMap<>();
     result.put("id", id); result.put("messages", messages); result.put("summary", store.sessionSummary(userId, id));
@@ -119,7 +119,7 @@ public class AgentController {
   }
 
   private ReentrantLock acquire(String userId) {
-    ReentrantLock lock = store.userLock(userId);
+    ReentrantLock lock = store.runLock(userId);
     if (!lock.tryLock()) throw new ApiRequestException(HttpStatus.CONFLICT, "Another request is active for this user");
     return lock;
   }

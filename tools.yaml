@@ -1,0 +1,54 @@
+# Ordinary read-only business tools. Restart the JAR after editing.
+# Only relative GET paths under agent.finance-base-url (/api/mock by default) are allowed.
+# Identity is injected by the server; do not define username/userId parameters.
+tools:
+  - name: list_portfolios
+    description: List the current user's portfolios, including IDs, currency and valuation.
+    title: Portfolios
+    status: 正在查询投资组合列表…
+    method: GET
+    path: /portfolios
+  - name: get_portfolio
+    description: Get a portfolio belonging to the current user, including cash and valuation.
+    title: Portfolio
+    status: 正在查询投资组合详情…
+    method: GET
+    path: /portfolios/{id}
+    parameters:
+      id: {type: string, description: Portfolio ID}
+  - name: get_positions
+    description: Get current holdings for one of the user's portfolios, including issuer IDs and P&L.
+    title: Positions
+    status: 正在查询持仓…
+    method: GET
+    path: /portfolios/{id}/positions
+    parameters:
+      id: {type: string, description: Portfolio ID}
+  - name: get_transactions
+    description: Get the current user's portfolio trade history, including BUY and SELL transactions.
+    title: Transactions
+    status: 正在查询交易记录…
+    method: GET
+    path: /portfolios/{id}/transactions
+    parameters:
+      id: {type: string, description: Portfolio ID}
+  - name: list_issuers
+    description: List distinct issuers represented in the current user's holdings.
+    title: Issuers
+    status: 正在查询发行人列表…
+    method: GET
+    path: /issuers
+  - name: get_issuer
+    description: Get issuer metadata visible through the current user's holdings. No ratings or financial statements are provided.
+    title: Issuer
+    status: 正在查询发行人详情…
+    method: GET
+    path: /issuers/{id}
+    parameters:
+      id: {type: string, description: Issuer ID}
+  - name: get_accounts
+    description: List the current user's accounts, cash, equity and buying power.
+    title: Accounts
+    status: 正在查询账户…
+    method: GET
+    path: /accounts

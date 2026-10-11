@@ -16,6 +16,7 @@ export type ChatMessage = {
   content: string;
   sources?: Source[];
   pending?: boolean;
+  partial?: boolean;
   status?: string;
   activities?: Activity[];
   startedAt?: number;
@@ -34,7 +35,7 @@ type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "answer_reset" }
   | { type: "error"; error: string }
-  | { type: "done" };
+  | { type: "done"; partial?: boolean; reason?: string; toolCalls?: number };
 
 const sessionKey = (userId: string) => `ragbot.session.${userId}`;
 const id = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -228,6 +229,7 @@ export function useAgentChat() {
     const timeout = window.setTimeout(() => { timedOut = true; cancel(); }, 270_000);
     let answer = "";
     let complete = false;
+    let partial = false;
     let activities: Activity[] = [];
     try {
       const response = await fetch("/api/chat", {
@@ -255,7 +257,7 @@ export function useAgentChat() {
           case "answer_reset": answer = ""; update(replyId, { content: "" }); break;
           case "delta": answer += event.text; update(replyId, { content: answer }); break;
           case "error": throw new Error(event.error);
-          case "done": complete = true; break;
+          case "done": partial = !!event.partial; complete = true; break;
         }
       };
       while (!complete) {
@@ -268,8 +270,8 @@ export function useAgentChat() {
       }
       if (!complete || !answer.trim()) throw new Error("The response ended before the answer completed");
       const endedAt = Date.now();
-      activities = finishActivities(activities, "completed", endedAt);
-      update(replyId, { pending: false, activities, endedAt });
+      activities = finishActivities(activities, partial ? "cancelled" : "completed", endedAt);
+      update(replyId, { pending: false, partial, activities, endedAt });
       // The agent is done; refreshing the sidebar is outside its execution deadline.
       window.clearTimeout(timeout);
       try {

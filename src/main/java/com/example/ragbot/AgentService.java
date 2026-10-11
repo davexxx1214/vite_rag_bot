@@ -71,7 +71,7 @@ public final class AgentService {
     this.mapper = mapper;
   }
 
-  public void run(String userId, String sessionId, String message, EventSink sink)
+  public void run(String userId, String sessionId, String message, EventSink eventSink)
       throws IOException, InterruptedException {
     MockFinanceService.User user = store.user(userId);
     store.requireExistingSession(userId, sessionId);
@@ -80,10 +80,21 @@ public final class AgentService {
     ActiveRun run = new ActiveRun(sessionId, control);
     active.put(userId, run);
     var timer = deadlines.schedule(control::cancel, properties.requestTimeoutSeconds(), TimeUnit.SECONDS);
+    var workTimer = deadlines.schedule(control::finishWork,
+        properties.requestTimeoutSeconds() - properties.finalAnswerReserveSeconds(), TimeUnit.SECONDS);
+    boolean[] disconnected = {false};
+    EventSink sink = event -> {
+      try { eventSink.write(event); }
+      catch (IOException error) { disconnected[0] = true; throw error; }
+    };
     List<JsonNode> transcript = new ArrayList<>();
     List<RagSource> sources = new ArrayList<>();
+    List<JsonNode> successfulResults = new ArrayList<>();
     int index = 0;
     boolean stored = false;
+    boolean finalRequested = false;
+    int toolCalls = 0;
+    String stopReason = "";
     try {
       long loadStarted = startActivity(sink, "memory-load", "正在读取用户记忆与会话历史…", "");
       index = store.turnCount(userId, sessionId) + 1;
@@ -98,6 +109,16 @@ public final class AgentService {
       boolean usagePressure = false;
       var callIds = new HashSet<String>();
       for (int round = 0; round < properties.maxRounds(); round++) {
+        boolean allowTools = round < properties.maxRounds() - 1
+            && toolCalls < properties.maxToolCalls() && stopReason.isEmpty() && !control.workExpired();
+        if (!allowTools) {
+          if (stopReason.isEmpty()) stopReason = control.workExpired() ? "query_time_budget" : "task_budget";
+          workTimer.cancel(false);
+          control.beginFinal();
+          finalRequested = true;
+          sink.write(Map.of("type", "activity_start", "id", "budget", "message", "查询预算已用完，正在用已有结果整理回答…",
+              "detail", "已执行 " + toolCalls + " / " + properties.maxToolCalls() + " 次工具调用"));
+        }
         control.check();
         String prepareId = "context-" + round;
         long prepareStarted = startActivity(sink, prepareId, "正在检查记忆与上下文…", "");
@@ -111,7 +132,6 @@ public final class AgentService {
         }
         endActivity(sink, prepareId, prepareStarted, true);
         sink.write(Map.of("type", "answer_reset"));
-        boolean allowTools = round < properties.maxRounds() - 1;
         if (!allowTools) instructions += "\nTool budget reached. Answer from available results and clearly state anything still unresolved.";
         String modelId = "model-" + round;
         long modelStarted = startActivity(sink, modelId, !allowTools ? "正在整理最终回答…"
@@ -130,30 +150,31 @@ public final class AgentService {
         keepFrom = current.size();
         current.addAll(response.output());
         transcript.addAll(response.output());
-        usagePressure = response.inputTokens() + response.outputTokens() >= Math.min(
-            properties.compactAtTokens(), properties.inputLimit(rag.chatModel()) * 4 / 5);
+        usagePressure = response.inputTokens() + response.outputTokens() >= properties.compactThreshold(rag.chatModel());
         List<JsonNode> calls = response.calls();
         if (calls.isEmpty()) {
           if (response.text().isBlank()) throw new IOException("The model returned an empty answer");
+          String notice = stopReason.isEmpty() ? "" : partialNotice(message);
+          if (!notice.isEmpty()) sink.write(Map.of("type", "delta", "text", notice));
           store.append(userId, sessionId, new MemoryStore.StoredTurn(index, Instant.now().toString(),
-              message, List.copyOf(transcript), response.text(), List.copyOf(sources), true, rag.chatModel()));
+              message, List.copyOf(transcript), response.text() + notice, List.copyOf(sources), stopReason.isEmpty(), rag.chatModel()));
           stored = true;
           // Optional maintenance never replaces an already completed answer on failure.
           long memoryStarted = startActivity(sink, "memory-check", "正在检查长期记忆是否需要更新…", "");
           try {
-            context.extractMemories(userId, sessionId, control);
+            if (stopReason.isEmpty()) context.extractMemories(userId, sessionId, control);
             endActivity(sink, "memory-check", memoryStarted, true);
           } catch (IOException | InterruptedException | RuntimeException error) {
             endActivity(sink, "memory-check", memoryStarted, false);
             LOGGER.warn("User memory extraction deferred ({})", error.getClass().getSimpleName());
           }
-          sink.write(Map.of("type", "done"));
+          sink.write(Map.of("type", "done", "partial", !stopReason.isEmpty(), "reason", stopReason,
+              "toolCalls", toolCalls));
           return;
         }
-        if (!allowTools || calls.size() > properties.maxToolCallsPerRound()) {
-          throw new IOException("Model exceeded the allowed tool-call budget");
-        }
+        if (!allowTools || calls.size() > 128) throw new IOException("Model returned an invalid final response");
         sink.write(Map.of("type", "answer_reset"));
+        int roundCalls = 0;
         for (JsonNode call : calls) {
           control.check();
           String name = call.path("name").asString("");
@@ -165,13 +186,22 @@ public final class AgentService {
               "message", toolStatus(name), "detail", toolDetail(name, arguments)));
           JsonNode output;
           boolean ok = true;
+          boolean sourcesChanged = false;
           try {
+            if (roundCalls >= properties.maxToolCallsPerRound() || toolCalls >= properties.maxToolCalls()) {
+              stopReason = "tool_call_budget";
+              throw new ApiRequestException(HttpStatus.TOO_MANY_REQUESTS,
+                  "Tool call budget reached; this call was not executed. Answer from existing results.");
+            }
+            roundCalls++;
+            toolCalls++;
             if (arguments.length() > 8_000) throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Tool arguments are too large");
             ToolRegistry.Result result = tools.execute(name, mapper.readTree(arguments),
                 new ToolRegistry.Scope(user, sessionId, sources.size(), control));
             output = result.output();
+            successfulResults.add(output);
             sources.addAll(result.sources());
-            if (!result.sources().isEmpty()) sink.write(Map.of("type", "sources", "sources", List.copyOf(sources)));
+            sourcesChanged = !result.sources().isEmpty();
           } catch (ApiRequestException error) {
             ok = false;
             output = mapper.valueToTree(Map.of("error", error.getMessage(), "status", error.status().value()));
@@ -185,6 +215,7 @@ public final class AgentService {
               "output", mapper.writeValueAsString(output)));
           current.add(toolOutput);
           transcript.add(toolOutput);
+          if (sourcesChanged) sink.write(Map.of("type", "sources", "sources", List.copyOf(sources)));
           sink.write(Map.of("type", "tool_end", "id", "tool-" + callId, "name", name, "ok", ok,
               "elapsedMs", elapsed(toolStarted)));
         }
@@ -192,6 +223,44 @@ public final class AgentService {
       throw new IOException("Agent exhausted its model-round budget");
     } catch (IOException | InterruptedException | RuntimeException error) {
       Thread.interrupted();
+      if (!stored && index > 0 && !successfulResults.isEmpty() && !(error instanceof ApiRequestException)
+          && (!control.cancelled() || control.timedOut()) && !disconnected[0]) {
+        String reason = control.workExpired() ? "query_time_budget" : "execution_failure";
+        String facts = recoveredResults(successfulResults);
+        String answer = partialAnswer(message, facts);
+        // Retry synthesis once, without tools or unfinished call/reasoning items. Never extend the deadline.
+        if (!finalRequested) {
+          try {
+            workTimer.cancel(false);
+            control.beginFinal();
+            sink.write(Map.of("type", "answer_reset"));
+            startActivity(sink, "recovery", "查询已停止，正在整理已取得的结果…", "已取得 " + successfulResults.size() + " 份工具结果");
+            String recoveryInstructions = instructions(user)
+                + "\nThe task stopped early. Use ONLY these successful results. Clearly identify unanswered parts; do not claim completion.";
+            var recoveryInput = List.of(context.message("user", message), context.message("user", "Successful tool results:\n" + facts));
+            if (context.estimate(recoveryInstructions, tools.definitions(), recoveryInput) >= properties.inputLimit(rag.chatModel()))
+              throw new IOException("Recovery context exceeds its budget");
+            var recovered = model.respond(recoveryInstructions, recoveryInput,
+                tools.definitions(), false, delta -> { control.check(); sink.write(Map.of("type", "delta", "text", delta)); }, control);
+            if (!recovered.calls().isEmpty() || recovered.text().isBlank()) throw new IOException("Invalid recovery answer");
+            answer = recovered.text() + partialNotice(message);
+            transcript.addAll(recovered.output());
+          } catch (IOException | InterruptedException | RuntimeException recoveryError) {
+            Thread.interrupted();
+            LOGGER.warn("Partial-answer synthesis unavailable ({})", recoveryError.getClass().getSimpleName());
+          }
+        }
+        if (!control.cancelled() || control.timedOut()) {
+          // A hard timeout cancels the owner too; a local, factual fallback needs no further model call.
+          store.append(userId, sessionId, new MemoryStore.StoredTurn(index, Instant.now().toString(), message,
+              List.copyOf(transcript), answer, List.copyOf(sources), false, rag.chatModel()));
+          stored = true;
+          sink.write(Map.of("type", "answer_reset"));
+          sink.write(Map.of("type", "delta", "text", answer));
+          sink.write(Map.of("type", "done", "partial", true, "reason", reason, "toolCalls", toolCalls));
+          return;
+        }
+      }
       if (!stored && index > 0) {
         try {
           store.append(userId, sessionId, new MemoryStore.StoredTurn(index, Instant.now().toString(), message,
@@ -203,11 +272,43 @@ public final class AgentService {
       throw error;
     } finally {
       timer.cancel(false);
+      workTimer.cancel(false);
       active.remove(userId, run);
       lock.unlock();
       // Cancellation must not leak an interrupt into the servlet worker's next request.
       Thread.interrupted();
     }
+  }
+
+  private String recoveredResults(List<JsonNode> results) {
+    List<JsonNode> facts = new ArrayList<>();
+    int budget = Math.min(8_000, properties.inputLimit(rag.chatModel()) / 4);
+    int share = Math.max(100, (budget - 100) / results.size());
+    for (JsonNode result : results) {
+      if (TokenBudget.estimate(result) <= share) { facts.add(result); continue; }
+      String preview = mapper.writeValueAsString(result);
+      JsonNode snippet;
+      do {
+        preview = MemoryStore.excerpt(preview, Math.max(1, preview.length() / 2));
+        snippet = mapper.valueToTree(Map.of("preview", preview, "truncated", true,
+            "note", "Only a preview; full tool results remain in this session's history."));
+      } while (TokenBudget.estimate(snippet) > share && preview.length() > 2);
+      facts.add(snippet);
+    }
+    return mapper.writeValueAsString(facts);
+  }
+
+  private static String partialNotice(String message) {
+    boolean chinese = message.codePoints().anyMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN);
+    return chinese ? "\n\n_任务未全部完成，已保留现有结果；可以继续提问补充查询。_"
+        : "\n\n_The task stopped early. Retrieved results are saved; continue this chat to query the remaining parts._";
+  }
+
+  private static String partialAnswer(String message, String facts) {
+    boolean chinese = message.codePoints().anyMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN);
+    return (chinese ? "任务未全部完成。以下是已成功取得的工具结果；尚未查询的内容无法确认，可以继续提问。\n\n"
+        : "The task did not fully complete. These tool results were retrieved successfully; unanswered parts still need a query. You can continue in this chat.\n\n")
+        + "```json\n" + facts + "```";
   }
 
   public boolean cancel(String userId, String sessionId) throws IOException {
@@ -232,7 +333,7 @@ public final class AgentService {
   }
 
   private ReentrantLock acquire(String userId) {
-    ReentrantLock lock = store.userLock(userId);
+    ReentrantLock lock = store.runLock(userId);
     if (!lock.tryLock()) throw new ApiRequestException(HttpStatus.CONFLICT, "Another request is active for this user");
     return lock;
   }
@@ -245,17 +346,12 @@ public final class AgentService {
         + "\nMEMORY.md (stable background):\n" + memory.notes() + "\n</user_memory>";
   }
 
-  private static String toolStatus(String name) {
+  private String toolStatus(String name) {
+    String configured = tools.status(name);
+    if (configured != null) return configured;
     return switch (name) {
       case "search_docs" -> "正在搜索本地知识库…";
-      case "list_portfolios" -> "正在查询投资组合列表…";
-      case "get_portfolio" -> "正在查询投资组合详情…";
       case "compare_portfolios" -> "正在比较投资组合…";
-      case "get_positions" -> "正在查询持仓…";
-      case "get_transactions" -> "正在查询交易记录…";
-      case "get_accounts" -> "正在查询账户…";
-      case "list_issuers" -> "正在查询发行人列表…";
-      case "get_issuer" -> "正在查询发行人详情…";
       case "remember" -> "正在保存长期记忆…";
       case "forget_memory" -> "正在删除指定记忆…";
       case "search_history" -> "正在搜索历史记忆…";

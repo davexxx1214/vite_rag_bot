@@ -23,6 +23,7 @@ public final class ToolRegistry {
   public record Result(JsonNode output, List<RagSource> sources) {}
   private record Tool(Map<String, Object> definition, Map<String, Object> fields, Handler handler) {}
   private final Map<String, Tool> tools = new LinkedHashMap<>();
+  private final Map<String, String> statuses = new LinkedHashMap<>();
   private final ObjectMapper mapper;
   private final AgentProperties properties;
   private final MemoryStore store;
@@ -30,7 +31,7 @@ public final class ToolRegistry {
   private final FinanceApiClient finance;
 
   public ToolRegistry(ObjectMapper mapper, AgentProperties properties, MemoryStore store,
-      ContextManager context, FinanceApiClient finance, RagChatService knowledge) {
+      ContextManager context, FinanceApiClient finance, RagChatService knowledge, BusinessTools business) {
     this.mapper = mapper;
     this.properties = properties;
     this.store = store;
@@ -49,20 +50,17 @@ public final class ToolRegistry {
           }
           return result(Map.of("excerpts", excerpts, "sources", sources), sources);
         });
-    register("list_portfolios", "List the current user's portfolios, including IDs, currency and valuation.", Map.of(),
-        (args, scope) -> query("/portfolios", "Portfolios", scope));
-    register("get_portfolio", "Get a portfolio belonging to the current user, including cash and valuation.",
-        Map.of("id", textSchema("Portfolio ID")), (args, scope) -> query("/portfolios/" + id(args), "Portfolio", scope));
-    register("get_positions", "Get current holdings for one of the user's portfolios, including issuer IDs and P&L.",
-        Map.of("id", textSchema("Portfolio ID")), (args, scope) -> query("/portfolios/" + id(args) + "/positions", "Positions", scope));
-    register("get_transactions", "Get the current user's portfolio trade history, including BUY and SELL transactions.",
-        Map.of("id", textSchema("Portfolio ID")), (args, scope) -> query("/portfolios/" + id(args) + "/transactions", "Transactions", scope));
-    register("list_issuers", "List distinct issuers represented in the current user's holdings.", Map.of(),
-        (args, scope) -> query("/issuers", "Issuers", scope));
-    register("get_issuer", "Get issuer metadata visible through the current user's holdings. No ratings or financial statements are provided.",
-        Map.of("id", textSchema("Issuer ID")), (args, scope) -> query("/issuers/" + id(args), "Issuer", scope));
-    register("get_accounts", "List the current user's accounts, cash, equity and buying power.", Map.of(),
-        (args, scope) -> query("/accounts", "Accounts", scope));
+    for (var tool : business.definitions()) {
+      register(tool.name(), tool.description(), tool.fields(), (args, scope) -> {
+        String path = tool.resolvedPath(args);
+        Map<String, String> query = tool.query(args);
+        JsonNode data = finance.get(path, query, scope.user(), scope.control());
+        List<RagSource> sources = List.of(new RagSource("B" + (scope.sourceOffset() + 1), tool.title(), path,
+            finance.sourceUrl(path, query, scope.user()), 1));
+        return result(Map.of("data", data, "sources", sources, "mock", true), sources);
+      });
+      statuses.put(tool.name(), tool.status());
+    }
     register("compare_portfolios", "Compare two of the current user's portfolios. Java calculates differences and allocation percentages. Different currencies are not converted.",
         Map.of("leftId", textSchema("First portfolio ID"), "rightId", textSchema("Second portfolio ID")), (args, scope) -> {
           String left = FinanceApiClient.segment(text(args, "leftId"));
@@ -120,6 +118,8 @@ public final class ToolRegistry {
     }
   }
 
+  public String status(String name) { return statuses.get(name); }
+
   public List<Map<String, Object>> definitions() {
     return tools.values().stream().map(Tool::definition).toList();
   }
@@ -136,15 +136,19 @@ public final class ToolRegistry {
     }
     for (var field : tool.fields().entrySet()) {
       @SuppressWarnings("unchecked") Map<String, Object> schema = (Map<String, Object>) field.getValue();
-      if (schema.get("type") instanceof List<?> types) {
-        if (!present(arguments, field.getKey())) continue;
-        if (types.contains("integer")) {
-          JsonNode value = arguments.path(field.getKey());
-          if (!value.isIntegralNumber() || value.asLong() < ((Number) schema.get("minimum")).longValue()
-              || value.asLong() > ((Number) schema.get("maximum")).longValue())
-            throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + field.getKey());
-        } else text(arguments, field.getKey());
+      Object rawType = schema.get("type");
+      List<?> types = rawType instanceof List<?> list ? list : List.of(rawType);
+      JsonNode value = arguments.path(field.getKey());
+      if (!present(arguments, field.getKey()) && types.contains("null")) continue;
+      if (types.contains("integer")) {
+        if (!value.isIntegralNumber() || (schema.get("minimum") instanceof Number min && value.asLong() < min.longValue())
+            || (schema.get("maximum") instanceof Number max && value.asLong() > max.longValue()))
+          throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + field.getKey());
+      } else if (types.contains("boolean")) {
+        if (!value.isBoolean()) throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + field.getKey());
       } else text(arguments, field.getKey());
+      if (schema.get("enum") instanceof List<?> allowed && !allowed.contains(value.asString()))
+        throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + field.getKey());
     }
     Result result = tool.handler().execute(arguments, scope);
     if (TokenBudget.estimate(result.output()) > properties.toolResultTokens()) {
@@ -167,12 +171,6 @@ public final class ToolRegistry {
       throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Tool result exceeds its budget; request a more specific resource");
     }
     return result;
-  }
-
-  private Result query(String path, String title, Scope scope) throws IOException, InterruptedException {
-    JsonNode data = finance.get(path, scope.user(), scope.control());
-    List<RagSource> sources = List.of(source(path, title, scope, 0));
-    return result(Map.of("data", data, "sources", sources, "mock", true), sources);
   }
 
   private RagSource source(String path, String title, Scope scope, int offset) {
@@ -233,9 +231,6 @@ public final class ToolRegistry {
     return Map.of("type", List.of("integer", "null"), "description", description, "minimum", min, "maximum", max);
   }
 
-  private static String id(JsonNode args) {
-    return FinanceApiClient.segment(text(args, "id"));
-  }
 
   private static String text(JsonNode args, String field) {
     JsonNode value = args.path(field);

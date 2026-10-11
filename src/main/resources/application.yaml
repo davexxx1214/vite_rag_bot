@@ -29,16 +29,19 @@ agent:
   memory-directory: ${AGENT_MEMORY_DIRECTORY:./data/agent}
   # Leave unset to call this Spring Boot server's actual HTTP port.
   finance-base-url: ${FINANCE_API_BASE_URL:}
-  input-budget-tokens: 32000
-  compact-at-tokens: 25000
-  compact-target-tokens: 12000
-  keep-recent-tokens: 6000
+  tools-config: ${AGENT_TOOLS_CONFIG:optional:file:./tools.yaml}
+  input-budget-tokens: 64000
+  compact-at-tokens: 48000
+  compact-target-tokens: 32000
+  keep-recent-tokens: 16000
   memory-budget-tokens: 1800
   max-output-tokens: 8000
   # 0 uses the model defaults; set this for proxies with a smaller window.
   context-window-tokens: 0
-  max-rounds: 6
+  max-rounds: 16
+  max-tool-calls: 12
   max-tool-calls-per-round: 8
+  final-answer-reserve-seconds: 40
   tool-result-tokens: 3000
   request-timeout-seconds: 240
   memory-extraction-interval: 3

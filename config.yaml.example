@@ -13,13 +13,18 @@ port: 3000
 # Optional agent settings (same keys as application.yaml)
 # agent:
 #   memory-directory: ./data/agent
+#   tools-config: optional:file:./tools.yaml # Falls back to the tools bundled in the JAR
 #   context-window-tokens: 0  # Detect model defaults; override for smaller proxy windows
-#   input-budget-tokens: 32000
-#   compact-at-tokens: 25000
-#   compact-target-tokens: 12000
-#   keep-recent-tokens: 6000
+#   input-budget-tokens: 64000
+#   compact-at-tokens: 48000
+#   compact-target-tokens: 32000
+#   keep-recent-tokens: 16000
 #   memory-budget-tokens: 1800
 #   request-timeout-seconds: 240 # Total agent deadline; keep HTTP/browser timeouts longer
+#   max-rounds: 16
+#   max-tool-calls: 12           # Total executed calls, including failures/retries
+#   max-tool-calls-per-round: 8  # Defensive cap; official API currently sends at most one
+#   final-answer-reserve-seconds: 40 # Stop query work at 200s, keep time to synthesize
 #   reasoning-effort: low
 #   history:
 #     archive-after-days: 30      # Inactive sessions: gzip transcript and large payloads

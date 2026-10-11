@@ -42,22 +42,43 @@ public final class FinanceApiClient {
   }
 
   public URI uri(String path, MockFinanceService.User user) {
+    return uri(path, Map.of(), user);
+  }
+
+  public URI uri(String path, Map<String, String> query, MockFinanceService.User user) {
     URI base = properties.financeBaseUrl() == null ? localBaseUrl : properties.financeBaseUrl();
     if (base == null) throw new IllegalStateException("Finance API is not ready");
     String url = base.toString().replaceAll("/+$", "");
-    return URI.create(url + path + "?username=" + URLEncoder.encode(user.username(), StandardCharsets.UTF_8));
+    StringBuilder target = new StringBuilder(url).append(path).append("?username=")
+        .append(URLEncoder.encode(user.username(), StandardCharsets.UTF_8));
+    query.forEach((key, value) -> {
+      if (List.of("username", "userid", "user_id").contains(key.toLowerCase(java.util.Locale.ROOT)))
+        throw new IllegalArgumentException("Identity query parameters are server-controlled");
+      target.append('&').append(URLEncoder.encode(key, StandardCharsets.UTF_8)).append('=')
+          .append(URLEncoder.encode(value, StandardCharsets.UTF_8));
+    });
+    return URI.create(target.toString());
   }
 
   public String sourceUrl(String path, MockFinanceService.User user) {
-    URI target = uri(path, user);
+    return sourceUrl(path, Map.of(), user);
+  }
+
+  public String sourceUrl(String path, Map<String, String> query, MockFinanceService.User user) {
+    URI target = uri(path, query, user);
     return properties.financeBaseUrl() == null
         ? target.getRawPath() + "?" + target.getRawQuery() : target.toString();
   }
 
   public JsonNode get(String path, MockFinanceService.User user, RunControl control)
       throws IOException, InterruptedException {
+    return get(path, Map.of(), user, control);
+  }
+
+  public JsonNode get(String path, Map<String, String> query, MockFinanceService.User user, RunControl control)
+      throws IOException, InterruptedException {
     control.check();
-    HttpRequest request = HttpRequest.newBuilder(uri(path, user))
+    HttpRequest request = HttpRequest.newBuilder(uri(path, query, user))
         .timeout(Duration.ofSeconds(Math.min(10, Math.max(1, control.timeout().toSeconds()))))
         .header("Accept", "application/json").GET().build();
     HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());

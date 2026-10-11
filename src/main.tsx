@@ -374,9 +374,9 @@ function App() {
                 <Typography sx={{ mx: 0.5, mb: 0.75, color: "#8b948d", fontSize: 9, fontWeight: 800, letterSpacing: ".09em", textTransform: "uppercase" }}>
                   {message.role === "assistant" ? "Help Bot" : "You"}
                 </Typography>
-                {message.role === "assistant" && (message.pending || !!message.activities?.length) &&
+                {message.role === "assistant" && (message.pending || message.partial || !!message.activities?.length) &&
                   <AgentActivityPanel activities={message.activities || []} pending={message.pending}
-                    status={message.status} startedAt={message.startedAt} endedAt={message.endedAt} />}
+                    partial={message.partial} status={message.status} startedAt={message.startedAt} endedAt={message.endedAt} />}
                 <Paper
                   variant="outlined"
                   sx={{

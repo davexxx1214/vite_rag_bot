@@ -8,8 +8,8 @@ import type { Activity } from "./agentActivity";
 const duration = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
 const labels = { running: "进行中", completed: "完成", failed: "失败", cancelled: "已停止" };
 
-export function AgentActivityPanel({ activities, pending, status, startedAt, endedAt }:
-  { activities: Activity[]; pending?: boolean; status?: string; startedAt?: number; endedAt?: number }) {
+export function AgentActivityPanel({ activities, pending, partial, status, startedAt, endedAt }:
+  { activities: Activity[]; pending?: boolean; partial?: boolean; status?: string; startedAt?: number; endedAt?: number }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!pending) return;
@@ -20,6 +20,9 @@ export function AgentActivityPanel({ activities, pending, status, startedAt, end
   const toolCalls = activities.filter(activity => activity.kind === "tool").length;
   const failures = activities.filter(activity => activity.state === "failed").length;
   return <Box sx={{ width: "91%", mb: 1, border: 1, borderColor: "#dde3dd", borderRadius: 1.5, bgcolor: "#f1f5f1", p: 1.25 }}>
+    {partial && !pending && <Typography role="status" sx={{ fontSize: 11, color: "warning.dark", mb: activities.length ? 1 : 0 }}>
+      任务未全部完成，已保留现有结果，可以继续提问。
+    </Typography>}
     {pending && <Box role="status" sx={{ display: "flex", gap: 1, alignItems: "center", mb: activities.length ? 1 : 0 }}>
       <CircularProgress size={13} sx={{ flexShrink: 0 }} />
       <Box sx={{ minWidth: 0 }}>

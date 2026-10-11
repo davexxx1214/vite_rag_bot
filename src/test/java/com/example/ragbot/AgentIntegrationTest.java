@@ -207,7 +207,7 @@ final class AgentIntegrationTest {
   @Test
   void automaticallyCompactsLongHistoryWithoutDeletingOriginals() throws Exception {
     String session = session("user-001");
-    String longAnswer = "Earlier portfolio snapshot pf-001. ".repeat(2_000);
+    String longAnswer = "Earlier portfolio snapshot pf-001. ".repeat(4_000);
     store.append("user-001", session, AgentTestSupport.turn(JSON, 1, "Earlier comparison", longAnswer));
     answer("Historical turn 1: discussed pf-001; full details remain in history.");
     answer("Continuing from your earlier comparison.");
@@ -245,11 +245,12 @@ final class AgentIntegrationTest {
   @Test
   void forcesFinalAnswerWhenRoundBudgetIsReached() throws Exception {
     String session = session("user-001");
-    for (int i = 0; i < 5; i++) REPLIES.add(response(List.of(call("get_accounts", Map.of(), "round" + i))));
-    answer("Account overview from the available results [B5].");
+    for (int i = 0; i < 12; i++) REPLIES.add(response(List.of(call("get_accounts", Map.of(), "round" + i))));
+    answer("Account overview from the available results [B12]. Remaining questions need another query.");
     assertThat(types(chat("user-001", session, "Check accounts"))).contains("done");
-    assertThat(REQUESTS).hasSize(6);
+    assertThat(REQUESTS).hasSize(13);
     assertThat(REQUESTS.getLast().path("tool_choice").asString()).isEqualTo("none");
+    assertThat(store.session("user-001", session).turns().getFirst().completed()).isFalse();
   }
 
   @Test
@@ -274,6 +275,15 @@ final class AgentIntegrationTest {
     var pending = http.sendAsync(builder("POST", "/api/chat", "user-001", Map.of("sessionId", session, "message", "Wait")).build(),
         HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     assertThat(stalled.await(10, TimeUnit.SECONDS)).isTrue();
+    // Read requests and creating another chat must finish while the model remains blocked.
+    for (String path : List.of("/api/agent/memory", "/api/agent/sessions", "/api/agent/sessions/" + session)) {
+      assertThat(http.sendAsync(builder("GET", path, "user-001", null).build(), HttpResponse.BodyHandlers.ofString())
+          .get(2, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+    }
+    assertThat(http.sendAsync(builder("POST", "/api/agent/sessions", "user-001", null).build(), HttpResponse.BodyHandlers.ofString())
+        .get(2, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+    assertThat(request("POST", "/api/chat", "user-001", Map.of("sessionId", session, "message", "Competing request")).body())
+        .contains("Another request is active", "\"type\":\"error\"");
     assertThat(request("PUT", "/api/agent/memory", "user-001", Map.of("content", "Busy")).statusCode()).isEqualTo(409);
     assertThat(jsonRequest("POST", "/api/agent/sessions/" + session + "/cancel", "user-001", null).path("cancelled").asBoolean()).isTrue();
     release.countDown();
@@ -316,6 +326,89 @@ final class AgentIntegrationTest {
 
   private String session(String userId) throws Exception {
     return jsonRequest("POST", "/api/agent/sessions", userId, null).path("id").asString();
+  }
+
+  @Test
+  void oversizedCallBatchPairsSkippedCallsAndReturnsPartialAnswer() throws Exception {
+    String session = session("user-001");
+    var calls = new java.util.ArrayList<JsonNode>();
+    for (int i = 0; i < 10; i++) calls.add(call("get_accounts", Map.of(), "batch" + i));
+    REPLIES.add(response(calls));
+    answer("Retrieved accounts [B1]; remaining queries were skipped.");
+    var events = chat("user-001", session, "Check many accounts");
+    assertThat(types(events)).contains("done").doesNotContain("error");
+    assertThat(toolResult(REQUESTS.getLast(), "batch7").path("data").isArray()).isTrue();
+    assertThat(toolResult(REQUESTS.getLast(), "batch8").path("status").asInt()).isEqualTo(429);
+    assertThat(toolResult(REQUESTS.getLast(), "batch9").path("status").asInt()).isEqualTo(429);
+    assertThat(REQUESTS.getLast().path("tool_choice").asString()).isEqualTo("none");
+    assertThat(events.getLast().path("partial").asBoolean()).isTrue();
+    assertThat(events.getLast().path("toolCalls").asInt()).isEqualTo(8);
+    assertThat(store.session("user-001", session).turns().getFirst().completed()).isFalse();
+  }
+
+  @Test
+  void totalCallBudgetAppliesAcrossRoundsWithoutDiscardingResults() throws Exception {
+    String session = session("user-001");
+    for (int round = 0; round < 2; round++) {
+      var calls = new java.util.ArrayList<JsonNode>();
+      for (int i = 0; i < 8; i++) calls.add(call("get_accounts", Map.of(), "total" + round + "-" + i));
+      REPLIES.add(response(calls));
+    }
+    answer("Available account data [B12]; additional calls were not executed.");
+    var events = chat("user-001", session, "Many account checks");
+    assertThat(REQUESTS).hasSize(3);
+    assertThat(toolResult(REQUESTS.getLast(), "total1-3").has("data")).isTrue();
+    assertThat(toolResult(REQUESTS.getLast(), "total1-4").path("status").asInt()).isEqualTo(429);
+    assertThat(events.getLast().path("toolCalls").asInt()).isEqualTo(12);
+    assertThat(events.getLast().path("partial").asBoolean()).isTrue();
+  }
+
+  @Test
+  void modelFailureAfterSuccessfulQuerySynthesizesFromFactsWithoutTools() throws Exception {
+    String session = session("user-001");
+    REPLIES.add(response(List.of(call("get_portfolio", Map.of("id", "pf-001"), "retrieved"))));
+    REPLIES.add(JSON.valueToTree(Map.of("httpStatus", 500, "error", Map.of("message", "secret-provider-details"))));
+    answer("Partial result: portfolio pf-001 [B1]. The rest needs another query.");
+    var events = chat("user-001", session, "Compare portfolio and accounts");
+    assertThat(types(events)).contains("done").doesNotContain("error");
+    assertThat(events.getLast().path("partial").asBoolean()).isTrue();
+    assertThat(events.toString()).doesNotContain("secret-provider-details");
+    assertThat(REQUESTS.getLast().path("tool_choice").asString()).isEqualTo("none");
+    assertThat(REQUESTS.getLast().path("input").toString()).contains("pf-001").doesNotContain("function_call");
+    var saved = store.session("user-001", session).turns().getFirst();
+    assertThat(saved.completed()).isFalse();
+    assertThat(saved.output().toString()).contains("retrieved", "pf-001");
+    answer("Continue querying missing data.");
+    assertThat(types(chat("user-001", session, "Continue"))).contains("done");
+  }
+
+  @Test
+  void failedSynthesisStillReturnsRetrievedDataAndSources() throws Exception {
+    String session = session("user-001");
+    REPLIES.add(response(List.of(call("get_portfolio", Map.of("id", "pf-001"), "retrieved"))));
+    for (int i = 0; i < 2; i++) REPLIES.add(JSON.valueToTree(Map.of("httpStatus", 500,
+        "error", Map.of("message", "secret-provider-details"))));
+    var events = chat("user-001", session, "查询投资组合和账户");
+    assertThat(types(events)).contains("done").doesNotContain("error");
+    assertThat(events.toString()).contains("任务未全部完成", "pf-001").doesNotContain("secret-provider-details");
+    assertThat(store.session("user-001", session).turns().getFirst().sources()).hasSize(1);
+    assertThat(store.session("user-001", session).turns().getFirst().completed()).isFalse();
+  }
+
+  @Test
+  void queryDeadlineStopsWorkButAllowsOneFinalSynthesis() throws Exception {
+    toolRegistry.register("expire_work_test", "Test the query deadline", Map.of(), (arguments, scope) -> {
+      scope.control().finishWork(); scope.control().check();
+      throw new AssertionError("Expired work must not continue");
+    });
+    String session = session("user-001");
+    REPLIES.add(response(List.of(call("get_portfolio", Map.of("id", "pf-001"), "retrieved"))));
+    REPLIES.add(response(List.of(call("expire_work_test", Map.of(), "expire"))));
+    answer("Partial portfolio result [B1]; query time was exhausted.");
+    var events = chat("user-001", session, "Read portfolio then do more work");
+    assertThat(types(events)).contains("done").doesNotContain("error");
+    assertThat(events.getLast().path("reason").asString()).isEqualTo("query_time_budget");
+    assertThat(REQUESTS.getLast().path("tool_choice").asString()).isEqualTo("none");
   }
 
   private List<JsonNode> chat(String userId, String session, String message) throws Exception {

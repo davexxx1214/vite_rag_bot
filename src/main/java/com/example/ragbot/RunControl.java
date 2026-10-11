@@ -9,6 +9,8 @@ final class RunControl {
   private final Thread owner = Thread.currentThread();
   private final long deadline;
   private volatile boolean cancelled;
+  private volatile boolean workExpired;
+  private boolean finalPhase;
   private InputStream stream;
 
   RunControl(int timeoutSeconds) {
@@ -36,9 +38,30 @@ final class RunControl {
     }
   }
 
+  synchronized void finishWork() {
+    if (finalPhase || cancelled) return;
+    workExpired = true;
+    owner.interrupt();
+    if (stream != null) {
+      try { stream.close(); } catch (IOException ignored) { /* Already disconnected. */ }
+    }
+  }
+
+  synchronized void beginFinal() throws IOException {
+    finalPhase = true;
+    workExpired = false;
+    if (!cancelled) Thread.interrupted();
+    check();
+  }
+
+  boolean workExpired() { return workExpired; }
+  boolean cancelled() { return cancelled; }
+  boolean timedOut() { return System.nanoTime() >= deadline; }
+
   void check() throws IOException {
     if (System.nanoTime() >= deadline) throw new IOException("Agent request timed out");
     if (cancelled || Thread.currentThread().isInterrupted()) throw new IOException("Agent request cancelled");
+    if (workExpired) throw new IOException("Query time budget reached; final answer reserved");
   }
 
   Duration timeout() throws IOException {

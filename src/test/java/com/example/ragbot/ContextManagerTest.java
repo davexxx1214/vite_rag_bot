@@ -110,6 +110,27 @@ class ContextManagerTest {
     var configured = new AgentProperties(root, null, 32_000, 25_000, 12_000, 6_000, 1_800, 8_000,
         20_000, 6, 8, 3_000, 120, 3, "low");
     assertThat(configured.inputLimit("gpt-6-luna")).isEqualTo(8_000);
+    assertThat(configured.compactThreshold("gpt-6-luna")).isEqualTo(6_000);
+    assertThat(configured.compactTarget("gpt-6-luna")).isEqualTo(4_000);
+    assertThat(configured.recentLimit("gpt-6-luna")).isEqualTo(2_000);
+  }
+
+  @Test
+  void compressesAtSeventyFivePercentOfTheWorkingBudget() throws Exception {
+    var mapper = new JsonMapper();
+    var props = new AgentProperties(root, null, 64_000, 48_000, 32_000, 16_000, 1_800, 8_000,
+        0, 16, 8, 3_000, 240, 3, "low");
+    assertThat(props.inputLimit("gpt-5-mini")).isEqualTo(64_000);
+    assertThat(props.inputLimit("gpt-6-luna")).isEqualTo(64_000);
+    var model = mock(OpenAiClient.class);
+    when(model.summarize(anyString(), anyString(), anyInt(), any())).thenReturn("Historical portfolio discussion.");
+    try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
+      String id = store.createSession("user-001");
+      store.append("user-001", id, AgentTestSupport.turn(mapper, 1, "pf-001", "x".repeat(96_000)));
+      var context = new ContextManager(props, AgentTestSupport.rag(), store, model, mapper);
+      assertThat(context.prepare("user-001", id, "System", List.of(), List.of(), false, new RunControl(30)).compacted()).isTrue();
+      assertThat(store.session("user-001", id).summarizedThrough()).isEqualTo(1);
+    }
   }
 
   @Test
