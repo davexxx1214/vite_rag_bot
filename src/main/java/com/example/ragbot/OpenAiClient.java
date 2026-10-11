@@ -55,6 +55,10 @@ public class OpenAiClient {
     return embeddings.getFirst();
   }
 
+  public double[] embed(String input, String model, RunControl control) throws IOException, InterruptedException {
+    return embedBatch(List.of(input), model, control).getFirst();
+  }
+
   public List<double[]> embedTexts(List<String> inputs, String model)
       throws IOException, InterruptedException {
     List<double[]> result = new ArrayList<>();
@@ -67,19 +71,25 @@ public class OpenAiClient {
 
   private List<double[]> embedBatch(List<String> inputs, String model)
       throws IOException, InterruptedException {
+    return embedBatch(inputs, model, null);
+  }
+
+  private List<double[]> embedBatch(List<String> inputs, String model, RunControl control)
+      throws IOException, InterruptedException {
     Map<String, Object> body = new LinkedHashMap<>();
     body.put("model", model);
     body.put("input", inputs.size() == 1 ? inputs.getFirst() : inputs);
     body.put("encoding_format", "float");
 
     HttpRequest request = request("/embeddings")
-        .timeout(Duration.ofSeconds(30))
+        .timeout(control == null ? Duration.ofSeconds(30) : control.timeout())
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
-    HttpResponse<String> response = http.send(
-        request,
-        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
-    );
+    BufferedResponse response;
+    if (control == null) {
+      var raw = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+      response = new BufferedResponse(raw.statusCode(), raw.body());
+    } else response = readResponse(request, control);
     ensureSuccess(response.statusCode(), response.body());
 
     JsonNode data = objectMapper.readTree(response.body()).path("data");
@@ -126,9 +136,8 @@ public class OpenAiClient {
         .header("Accept", "text/event-stream")
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
-    HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+    HttpResponse<InputStream> response = control.send(http, request);
     try (InputStream inputStream = response.body()) {
-      control.attach(inputStream);
       try {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
           ensureSuccess(response.statusCode(), new String(inputStream.readAllBytes(), StandardCharsets.UTF_8));
@@ -166,9 +175,22 @@ public class OpenAiClient {
     body.put("stream", false);
     HttpRequest request = request("/responses").timeout(control.timeout())
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build();
-    HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    BufferedResponse response = readResponse(request, control);
     ensureSuccess(response.statusCode(), response.body());
     return parseResponse(objectMapper.readTree(response.body())).text();
+  }
+
+  private record BufferedResponse(int statusCode, String body) {}
+
+  private BufferedResponse readResponse(HttpRequest request, RunControl control)
+      throws IOException, InterruptedException {
+    HttpResponse<InputStream> response = control.send(http, request);
+    try (InputStream input = response.body()) {
+      control.check();
+      String body = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+      control.check();
+      return new BufferedResponse(response.statusCode(), body);
+    } finally { control.detach(); }
   }
 
   private Map<String, Object> responseBody(String instructions, List<JsonNode> input, int maxTokens) {

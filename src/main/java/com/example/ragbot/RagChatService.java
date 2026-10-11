@@ -21,8 +21,13 @@ public class RagChatService {
   }
 
   public RagRetrieval retrieve(String message) throws IOException, InterruptedException {
+    return retrieve(message, null);
+  }
+
+  public RagRetrieval retrieve(String message, RunControl control) throws IOException, InterruptedException {
     long startedAt = System.currentTimeMillis();
-    double[] queryEmbedding = openAi.embed(message, ragIndex.embeddingModel());
+    double[] queryEmbedding = control == null ? openAi.embed(message, ragIndex.embeddingModel())
+        : openAi.embed(message, ragIndex.embeddingModel(), control);
     List<RagMatch> matches = ragIndex.search(queryEmbedding, 5);
     LOGGER.info("RAG retrieval completed in {}ms", System.currentTimeMillis() - startedAt);
 

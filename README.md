@@ -235,9 +235,11 @@ The ordinary API uses `parallel_tool_calls: false`, so at most one call is retur
 as described in [OpenAI Docs](https://developers.openai.com/api/docs/guides/function-calling).
 Budget exhaustion disables further tools and forces an answer from available results. Unexpected
 oversized call batches execute only within both caps; skipped calls receive paired budget errors.
-The query deadline interrupts blocked work and reserves time for one synthesis without tools.
-If synthesis fails or the hard deadline is reached, a local response preserves bounded previews
-of successful results, sources and references to full history. No extra deadline is granted.
+The query deadline cancels pending HTTP requests and closes response streams, reserving time for
+one synthesis without tools. It does not interrupt the run's thread or file writes.
+If synthesis fails or the hard deadline is reached, a short local response lists completed queries.
+Original tool results remain in history/payload files and can be retrieved on demand; they are not
+copied into the fallback answer or the next turn's context. No extra deadline is granted.
 User cancellation and disconnection stop the run without launching recovery model requests.
 Partial answers are marked in the stream and stored as incomplete turns, keeping full tool records
 available in history. The UI labels them clearly and allows a follow-up query in the same chat.

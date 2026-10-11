@@ -2,16 +2,24 @@ package com.example.ragbot;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-/** One owner thread per run; closing the live stream also interrupts blocked SSE reads. */
+/** Cancels only network work; the run's file writes can finish without a thread interrupt. */
 final class RunControl {
-  private final Thread owner = Thread.currentThread();
   private final long deadline;
   private volatile boolean cancelled;
   private volatile boolean workExpired;
   private boolean finalPhase;
   private InputStream stream;
+  private CompletableFuture<HttpResponse<InputStream>> request;
 
   RunControl(int timeoutSeconds) {
     deadline = System.nanoTime() + Duration.ofSeconds(timeoutSeconds).toNanos();
@@ -28,20 +36,17 @@ final class RunControl {
 
   synchronized void cancel() {
     cancelled = true;
-    owner.interrupt();
-    if (stream != null) {
-      try {
-        stream.close();
-      } catch (IOException ignored) {
-        // A cancelled stream may already have disconnected.
-      }
-    }
+    stopNetwork();
   }
 
   synchronized void finishWork() {
     if (finalPhase || cancelled) return;
     workExpired = true;
-    owner.interrupt();
+    stopNetwork();
+  }
+
+  private void stopNetwork() {
+    if (request != null) request.cancel(true);
     if (stream != null) {
       try { stream.close(); } catch (IOException ignored) { /* Already disconnected. */ }
     }
@@ -50,8 +55,40 @@ final class RunControl {
   synchronized void beginFinal() throws IOException {
     finalPhase = true;
     workExpired = false;
-    if (!cancelled) Thread.interrupted();
     check();
+  }
+
+  HttpResponse<InputStream> send(HttpClient client, HttpRequest httpRequest)
+      throws IOException, InterruptedException {
+    CompletableFuture<HttpResponse<InputStream>> pending;
+    synchronized (this) {
+      check();
+      pending = client.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+      request = pending;
+    }
+    boolean handedOff = false;
+    try {
+      HttpResponse<InputStream> response = pending.get(timeout().toNanos(), TimeUnit.NANOSECONDS);
+      // Transfer cancellation from the pending request to its response stream without a gap.
+      attach(response.body());
+      handedOff = true;
+      return response;
+    } catch (CancellationException error) {
+      check();
+      throw new IOException("HTTP request cancelled", error);
+    } catch (TimeoutException error) {
+      throw new IOException("HTTP request timed out", error);
+    } catch (ExecutionException error) {
+      check();
+      if (error.getCause() instanceof IOException io) throw io;
+      throw new IOException("HTTP request failed", error.getCause());
+    } finally {
+      if (!handedOff) pending.whenComplete((received, error) -> {
+        if (received != null) try { received.body().close(); } catch (IOException ignored) { /* Already closed. */ }
+      });
+      if (!handedOff) pending.cancel(true);
+      synchronized (this) { if (request == pending) request = null; }
+    }
   }
 
   boolean workExpired() { return workExpired; }

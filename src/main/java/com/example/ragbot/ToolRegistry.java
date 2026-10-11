@@ -39,7 +39,7 @@ public final class ToolRegistry {
     this.finance = finance;
     register("search_docs", "Search the local help knowledge base for terminology, rules or API documentation. Cite returned sources.",
         Map.of("query", textSchema("A standalone knowledge search query")), (args, scope) -> {
-          RagRetrieval retrieval = knowledge.retrieve(text(args, "query"));
+          RagRetrieval retrieval = knowledge.retrieve(text(args, "query"), scope.control());
           String excerpts = retrieval.context();
           List<RagSource> sources = new ArrayList<>();
           for (int i = retrieval.sources().size() - 1; i >= 0; i--) {

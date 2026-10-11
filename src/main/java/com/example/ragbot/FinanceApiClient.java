@@ -81,9 +81,8 @@ public final class FinanceApiClient {
     HttpRequest request = HttpRequest.newBuilder(uri(path, query, user))
         .timeout(Duration.ofSeconds(Math.min(10, Math.max(1, control.timeout().toSeconds()))))
         .header("Accept", "application/json").GET().build();
-    HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+    HttpResponse<InputStream> response = control.send(http, request);
     try (InputStream body = response.body()) {
-      control.attach(body);
       try {
         byte[] bytes = body.readNBytes(131_073);
         if (bytes.length > 131_072) throw new IOException("Finance API result is too large; narrow the query");

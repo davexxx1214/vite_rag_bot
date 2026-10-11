@@ -25,17 +25,26 @@ class AgentDeadlineTest {
   @TempDir Path root;
 
   @Test
-  void queryDeadlineInterruptsBlockedWorkAndKeepsTimeForTheFinalAnswer() throws Exception {
+  void queryDeadlineClosesBlockedWorkAndKeepsTimeForTheFinalAnswer() throws Exception {
     exerciseDeadline(false);
   }
 
   @Test
-  void hardDeadlineReturnsLocalFactsWhenTheFinalModelCallAlsoBlocks() throws Exception {
+  void hardDeadlineReturnsQueryListWhenTheFinalModelCallAlsoBlocks() throws Exception {
     exerciseDeadline(true);
   }
 
   @Test
   void modelRoundCapForcesSynthesisEvenWhenToolCallsRemain() throws Exception {
+    exerciseRoundCap(false);
+  }
+
+  @Test
+  void finalModelToolCallReturnsShortFallbackWithoutExecutingIt() throws Exception {
+    exerciseRoundCap(true);
+  }
+
+  private void exerciseRoundCap(boolean invalidFinal) throws Exception {
     var mapper = new JsonMapper();
     var props = new AgentProperties(root, null, 64_000, 48_000, 32_000, 16_000, 1_800, 8_000,
         0, 2, 8, 3_000, 30, 3, "low", 12, 5);
@@ -45,6 +54,8 @@ class AgentDeadlineTest {
       if (requests.getAndIncrement() == 0) return new OpenAiClient.ModelResponse(List.of(mapper.valueToTree(Map.of(
           "type", "function_call", "name", "round_lookup", "call_id", "known", "arguments", "{}"))), "", 100, 10);
       assertThat((boolean) invocation.getArgument(3)).isFalse();
+      if (invalidFinal) return new OpenAiClient.ModelResponse(List.of(mapper.valueToTree(Map.of(
+          "type", "function_call", "name", "round_lookup", "call_id", "ignored", "arguments", "{}"))), "", 100, 10);
       ((OpenAiClient.TextSink) invocation.getArgument(4)).accept("Known portfolio data.");
       return new OpenAiClient.ModelResponse(List.of(AgentTestSupport.answer(mapper, "Known portfolio data.")),
           "Known portfolio data.", 100, 10);
@@ -63,6 +74,11 @@ class AgentDeadlineTest {
       assertThat(requests.get()).isEqualTo(2);
       assertThat(events.getLast()).containsEntry("partial", true).containsEntry("toolCalls", 1);
       assertThat(store.session("user-001", session).turns().getFirst().completed()).isFalse();
+      if (invalidFinal) {
+        var saved = store.session("user-001", session).turns().getFirst();
+        assertThat(saved.answer()).contains("round_lookup").doesNotContain("pf-round", "```json");
+        assertThat(saved.output().toString()).contains("pf-round");
+      }
     }
   }
 
@@ -106,8 +122,19 @@ class AgentDeadlineTest {
       if (round == 0) return new OpenAiClient.ModelResponse(List.of(mapper.valueToTree(Map.of(
           "type", "function_call", "name", "deadline_lookup", "call_id", "known", "arguments", "{}"))), "", 100, 10);
       if (round == 1 || blockFinal) {
-        if (!new CountDownLatch(1).await(10, TimeUnit.SECONDS)) throw new AssertionError("Deadline did not interrupt the model");
-        throw new AssertionError("Unexpected latch release");
+        RunControl control = invocation.getArgument(5);
+        var closed = new CountDownLatch(1);
+        try (var stream = new java.io.ByteArrayInputStream(new byte[0]) {
+          @Override public void close() { closed.countDown(); }
+        }) {
+          control.attach(stream);
+          try {
+            assertThat(closed.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(Thread.currentThread().isInterrupted()).isFalse();
+            control.check();
+            throw new AssertionError("Cancelled model work must stop");
+          } finally { control.detach(); }
+        }
       }
       assertThat((boolean) invocation.getArgument(3)).isFalse();
       String text = "Retrieved pf-deadline; remaining work was stopped.";
@@ -130,7 +157,10 @@ class AgentDeadlineTest {
       assertThat(elapsed).isBetween(3_800L, 6_500L);
       assertThat(requests.get()).isEqualTo(3);
       assertThat(events.getLast()).containsEntry("type", "done").containsEntry("partial", true);
-      assertThat(store.session("user-001", session).turns().getFirst().answer()).contains("pf-deadline");
+      var saved = store.session("user-001", session).turns().getFirst();
+      if (blockFinal) assertThat(saved.answer()).contains("deadline_lookup").doesNotContain("pf-deadline", "```json");
+      else assertThat(saved.answer()).contains("pf-deadline");
+      assertThat(saved.output().toString()).contains("pf-deadline");
       assertThat(store.session("user-001", session).turns().getFirst().completed()).isFalse();
       assertThat(Thread.currentThread().isInterrupted()).isFalse();
     }

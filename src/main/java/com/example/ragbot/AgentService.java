@@ -90,6 +90,7 @@ public final class AgentService {
     List<JsonNode> transcript = new ArrayList<>();
     List<RagSource> sources = new ArrayList<>();
     List<JsonNode> successfulResults = new ArrayList<>();
+    List<String> completedQueries = new ArrayList<>();
     int index = 0;
     boolean stored = false;
     boolean finalRequested = false;
@@ -200,6 +201,9 @@ public final class AgentService {
                 new ToolRegistry.Scope(user, sessionId, sources.size(), control));
             output = result.output();
             successfulResults.add(output);
+            String detail = toolDetail(name, arguments);
+            String query = name + (detail.isBlank() ? "" : " (" + detail + ")");
+            if (completedQueries.size() < 12) completedQueries.add(MemoryStore.excerpt(query, 240));
             sources.addAll(result.sources());
             sourcesChanged = !result.sources().isEmpty();
           } catch (ApiRequestException error) {
@@ -227,7 +231,7 @@ public final class AgentService {
           && (!control.cancelled() || control.timedOut()) && !disconnected[0]) {
         String reason = control.workExpired() ? "query_time_budget" : "execution_failure";
         String facts = recoveredResults(successfulResults);
-        String answer = partialAnswer(message, facts);
+        String answer = partialAnswer(message, completedQueries);
         // Retry synthesis once, without tools or unfinished call/reasoning items. Never extend the deadline.
         if (!finalRequested) {
           try {
@@ -251,7 +255,7 @@ public final class AgentService {
           }
         }
         if (!control.cancelled() || control.timedOut()) {
-          // A hard timeout cancels the owner too; a local, factual fallback needs no further model call.
+          // A local fallback needs no further model call; original tool outputs remain in history.
           store.append(userId, sessionId, new MemoryStore.StoredTurn(index, Instant.now().toString(), message,
               List.copyOf(transcript), answer, List.copyOf(sources), false, rag.chatModel()));
           stored = true;
@@ -304,11 +308,14 @@ public final class AgentService {
         : "\n\n_The task stopped early. Retrieved results are saved; continue this chat to query the remaining parts._";
   }
 
-  private static String partialAnswer(String message, String facts) {
+  private static String partialAnswer(String message, List<String> completedQueries) {
     boolean chinese = message.codePoints().anyMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN);
-    return (chinese ? "任务未全部完成。以下是已成功取得的工具结果；尚未查询的内容无法确认，可以继续提问。\n\n"
-        : "The task did not fully complete. These tool results were retrieved successfully; unanswered parts still need a query. You can continue in this chat.\n\n")
-        + "```json\n" + facts + "```";
+    String notice = chinese ? "任务未全部完成，暂时无法整理回答。已取得的结果保存在会话历史中，可以继续提问。\n\n已完成的查询：\n\n"
+        : "The task stopped before an answer could be prepared. Retrieved results are saved in this chat's history; you can continue asking.\n\nCompleted queries:\n\n";
+    // Plain labels only: no tool payloads, arbitrary arguments, or Markdown supplied by a tool.
+    return notice + completedQueries.stream().distinct()
+        .map(query -> "- " + query.replaceAll("[\\\\`*{}\\[\\]<>!#|]", ""))
+        .collect(java.util.stream.Collectors.joining("\n"));
   }
 
   public boolean cancel(String userId, String sessionId) throws IOException {

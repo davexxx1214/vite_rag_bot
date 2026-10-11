@@ -383,7 +383,7 @@ final class AgentIntegrationTest {
   }
 
   @Test
-  void failedSynthesisStillReturnsRetrievedDataAndSources() throws Exception {
+  void failedSynthesisKeepsDataInHistoryAndReturnsOnlyQueryList() throws Exception {
     String session = session("user-001");
     REPLIES.add(response(List.of(call("get_portfolio", Map.of("id", "pf-001"), "retrieved"))));
     for (int i = 0; i < 2; i++) REPLIES.add(JSON.valueToTree(Map.of("httpStatus", 500,
@@ -393,6 +393,14 @@ final class AgentIntegrationTest {
     assertThat(events.toString()).contains("任务未全部完成", "pf-001").doesNotContain("secret-provider-details");
     assertThat(store.session("user-001", session).turns().getFirst().sources()).hasSize(1);
     assertThat(store.session("user-001", session).turns().getFirst().completed()).isFalse();
+    var saved = store.session("user-001", session).turns().getFirst();
+    assertThat(saved.answer()).contains("get_portfolio", "pf-001").doesNotContain("```json", "totalValue", "holdings");
+    assertThat(saved.answer().length()).isLessThan(800);
+    assertThat(saved.output().toString()).contains("pf-001");
+    answer("Continue querying missing data.");
+    assertThat(types(chat("user-001", session, "Continue"))).contains("done");
+    assertThat(REQUESTS.getLast().path("input").toString()).contains("get_portfolio")
+        .doesNotContain("function_call_output", "totalValue", "holdings");
   }
 
   @Test
