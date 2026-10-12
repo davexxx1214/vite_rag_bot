@@ -17,7 +17,7 @@ class SoulInstructionsTest {
     Path file = root.resolve("SOUL.md");
     var soul = new SoulInstructions("optional:" + file.toUri());
     String bundled = soul.read();
-    assertThat(bundled).contains("SSBot", "金融业务助手", "如无必要，勿增实体。",
+    assertThat(bundled).contains("SSBot", "financial business assistant", "Do not add unnecessary complexity.",
         "compare_portfolios", "[S#]/[B#]", "Do not store secrets");
     Files.writeString(file, "# SOUL\n本地设定：简短回答。\n");
     assertThat(soul.read()).isEqualTo("# SOUL\n本地设定：简短回答。");

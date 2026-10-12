@@ -90,8 +90,8 @@ final class AgentIntegrationTest {
     answer("你好，我是 SSBot。");
     assertThat(types(chat("user-001", session, "你是谁？"))).contains("done").doesNotContain("error");
     String instructions = REQUESTS.getFirst().path("instructions").asString();
-    assertThat(instructions).contains("SSBot", "金融业务助手", "如无必要，勿增实体。",
-        "回复要简洁、自然、温暖。", "要有自己的判断，不要做只会附和的应声虫。",
+    assertThat(instructions).contains("SSBot", "financial business assistant", "Do not add unnecessary complexity.",
+        "Keep replies concise, natural and warm.", "Use independent judgment; do not simply agree with everything the user says.",
         "search_docs", "compare_portfolios", "Current user: alice (user-001)",
         "USER.md", "MEMORY.md", "用户明确偏好中文回答");
     Files.writeString(ROOT.resolve("SOUL.md"), instructions.substring(0, instructions.indexOf("\nCurrent user:"))

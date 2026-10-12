@@ -1,6 +1,6 @@
-# Local Finance Agent
+# SSBot - Local Finance Agent
 
-A lightweight financial assistant with a React + MUI + Vite frontend and a Spring Boot 4 / Java 21 backend. The agent searches local vectorized documents, calls financial mock APIs, and saves per-user memory and conversations as readable server files. Production still runs as a single Java JAR.
+SSBot is a financial business assistant with a React + MUI + Vite frontend and a Spring Boot 4 / Java 21 backend. It searches a local vector index, queries financial mock APIs, and saves per-user memory and conversations as readable server files. Independent read tools can execute concurrently, while memory writes remain serial. Production runs as a single Java JAR.
 
 The backend is a standard Maven project. Spring Boot provides the HTTP API, configuration, validation, static-file hosting, and an executable production JAR. Vector search stays deliberately small: the generated JSON index is loaded into memory and searched with cosine similarity, without a vector database or a Node.js server runtime.
 
@@ -39,6 +39,7 @@ Use `pnpm build:all` to regenerate `data/rag-index.json` before building everyth
 ```sh
 pnpm typecheck       # Type-check the frontend
 pnpm test:server     # Run the Spring Boot/Maven tests
+pnpm test:ui         # Check frontend execution-event handling
 pnpm build:server    # Test and package the executable Spring Boot JAR
 pnpm server          # Build and run only the Java service
 pnpm build:index     # Rebuild the local vector index through Java
@@ -48,6 +49,8 @@ pnpm build           # Build frontend and Java service
 ## Project layout
 
 - `SOUL.md`: editable SSBot identity, style and financial business instructions.
+- `tools.yaml`: definitions for read-only business API tools.
+- `config.yaml.example`: local configuration template; copy it to the ignored `config.yaml`.
 - `docs/`: local Markdown knowledge base.
 - `data/rag-index.json`: generated local vector index.
 - `src/main/java/`: Spring Boot API, agent loop, tools, file memory, RAG retrieval, OpenAI client and index builder.
@@ -58,15 +61,15 @@ pnpm build           # Build frontend and Java service
 
 The bundled Alpaca pages are concise adaptations for demonstration and link to their original documentation.
 
-## Agent v1
+## Using SSBot
 
 Open **Ask AI**, choose a demo user, and try:
 
-- `列出我的 portfolios，并比较 pf-001 和 pf-002。` (Alice)
-- `比较我持仓中的 iss-001 和 iss-004。` (Bob; issuer metadata only)
-- `查询订单相关的帮助文档。`
-- `记住我偏好用中文、简短地回答。`
-- `我们上次讨论 pf-001 时说了什么？`
+- `List my portfolios and compare pf-001 with pf-002.` (Alice)
+- `Compare the metadata for issuers iss-001 and iss-004 in my holdings.` (Bob)
+- `Find the help documentation about order rules.`
+- `Remember that I prefer short replies in English.`
+- `What did we discuss about pf-001 last time?`
 
 **New chat** creates a separate conversation while retaining that user's long-term memory.
 The conversation selector restores server history, including after browser refresh or server restart.
@@ -74,25 +77,47 @@ The conversation selector restores server history, including after browser refre
 the backend request and releases the user's write lock. Clearing memory removes the active
 preferences; original conversation records and archived memory remain on disk.
 
-The design follows a small Pi-style loop implemented directly in Java:
+## Agent architecture
 
-1. Load the current user's memory and the selected session's summary/recent history.
-2. Send the available tool schemas to the OpenAI Responses API.
-3. Execute the model's named calls, return each result with its `call_id`, and repeat.
-4. Stream the final answer and atomically save the full turn, including tool records.
+The agent uses a model/tool loop implemented directly in Java:
+
+1. Acquire the user's run lock and load memory and the selected conversation.
+2. Read `SOUL.md`, prepare the context, and call the model with the available tools.
+3. Execute consecutive read tools concurrently, using writes as serial barriers.
+4. Assign citations and return results in call order, preserving each `call_id` and opaque reasoning item.
+5. Repeat until the model answers or a budget requires a final answer without tools.
+6. Commit one complete or incomplete history turn, update eligible memory, and finish the NDJSON stream.
 
 There are no subprocess agents, shell tools, extra Node service or database dependencies.
-`AgentService` owns request locks, deadlines and recovery; `AgentLoop` owns model/tool rounds.
-`Model` isolates model calls, with `OpenAiClient` adapting the Responses API and preserving opaque
-reasoning items. `AgentTool` describes and executes business tools; `DefaultAgentTools` registers
-the help, HTTP, comparison and memory implementations. `ToolRegistry` validates arguments and
-bounds results; `ContextManager` compresses working context; `CoreMemoryManager` updates stable
-preferences; `MemoryStore` owns file transactions. `AgentHistoryRecorder` commits one full history
-turn, including partial/failed requests. `NdjsonAgentListener` maps typed `AgentEvent` events to the
-existing frontend protocol.
-`HistoryMaintenance` owns scheduled archive/retention and incremental quota accounting.
-`FinanceApiClient` makes real HTTP
-requests to this JAR's mock endpoints, automatically using its actual listening port.
+
+| Component | Responsibility |
+| --- | --- |
+| `AgentService` | Own user locks, active requests, deadlines and recovery orchestration |
+| `AgentLoop` | Run model/tool rounds and enforce the existing round and call budgets |
+| `Model` / `OpenAiClient` | Define model calls and adapt the Responses API, preserving opaque output items |
+| `AgentTool` / `DefaultAgentTools` | Define tool metadata and execution; register knowledge, business and memory tools |
+| `ToolRegistry` / `AgentToolExecutor` | Validate arguments, execute read batches, assign citations and bound results |
+| `AgentContext` / `ContextManager` | Inject current instructions and memory, restore history and compress context |
+| `AgentRecovery` | Attempt one final synthesis from successful results, or return a bounded local fallback |
+| `AgentHistoryRecorder` / `MemoryStore` / `FileHistory` | Commit full turns and manage per-user memory, transcripts and payloads |
+| `AgentEvent` / `AgentListener` / `NdjsonAgentListener` | Separate run events from the frontend's NDJSON wire format |
+| `CoreMemoryManager` / `CoreMemoryFiles` | Update durable preferences and recover interrupted two-file memory writes |
+| `HistoryMaintenance` | Archive inactive sessions, enforce retention and track storage usage |
+| `FinanceApiClient` | Query user-scoped mock APIs over HTTP, using the server's actual listening port |
+
+The model adapter, tool implementations, context preparation, event delivery and history commits
+have separate boundaries. The existing storage formats, compression behavior and run limits remain
+in place.
+
+### Model adapters
+
+The bundled adapter is `OpenAiClient`. An alternative adapter implements `Model.respond` and
+`Model.summarize` and is selected through Spring dependency injection. A `Model.Turn` includes the
+complete output items, answer text and token usage. Preserve opaque reasoning and call identifiers
+when adapting those items: the loop returns them in subsequent tool rounds. The existing RAG
+embedding path continues to use `OpenAiClient` independently of the chat interface.
+
+### Tool catalog
 
 | Tool | Purpose |
 | --- | --- |
@@ -141,7 +166,7 @@ tools:
   - name: get_report
     description: Read a report belonging to the current user.
     title: Report
-    status: 正在查询报告…
+    status: Querying report...
     method: GET
     path: /reports/{id}
     parameters:
@@ -158,12 +183,16 @@ URLs, identity overrides, undefined placeholders, duplicate names and non-GET me
 ### Editing SSBot's instructions
 
 Edit the root `SOUL.md` to change SSBot's identity, reply style or business instructions.
+The file is written in English and defines SSBot as a financial business assistant. Its style is
+to avoid unnecessary complexity, reply concisely and warmly, and use independent judgment.
+The instruction language does not force English replies: SSBot still replies in the user's language.
 The backend reads the UTF-8 file before each agent model request, so edits take effect on
 subsequent requests without rebuilding or restarting. User identity and per-user `USER.md` /
 `MEMORY.md` context are appended separately.
 
 The default is `optional:file:./SOUL.md`, relative to the server's working directory. When
-absent, the JAR uses its bundled copy. Set `agent.soul-config` (or `AGENT_SOUL_CONFIG`) to
+absent, the JAR uses its bundled copy. To edit a deployed instance, place `SOUL.md` beside the JAR
+and start the server from that directory, or set `agent.soul-config` (or `AGENT_SOUL_CONFIG`) to
 an explicit `file:` or `classpath:` resource to choose another file. A missing explicit
 resource or an empty file fails startup; invalid edits also fail the affected request.
 The file is server configuration shared by all users; edit it on the server filesystem.
@@ -243,10 +272,10 @@ summary, index and payloads; independently saved core preferences remain until e
 ### Models and context limits
 
 The default is `gpt-6-luna`; set `chat_model: gpt-5-mini` in `config.yaml` to switch.
-Built-in window settings are 1,050,000 and 400,000 tokens respectively, matching the official
-[GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna) and
-[GPT-5 Mini](https://developers.openai.com/api/docs/models/gpt-5-mini) documentation. The agent intentionally
-uses a smaller working budget to control latency and cost:
+`AgentProperties` uses built-in budgeting windows of 1,050,000 and 400,000 tokens for these
+model names, and 128,000 tokens for other names. Set `agent.context-window-tokens` for the actual
+window exposed by your provider or proxy. The agent uses a smaller working budget to control
+latency and cost:
 
 | Setting | Default |
 | --- | --- |
@@ -270,8 +299,9 @@ up to 6,000 estimated tokens. Oversized active tool work is summarized only
 between complete call/result groups. Encrypted reasoning is replayed within the active loop;
 transport bytes are not counted as model tokens. Incomplete model responses are recorded as
 failed turns, never as successful answers. Tool attempts count even when they fail or need a retry.
-The ordinary API uses `parallel_tool_calls: false`, so at most one call is returned per response,
-as described in [OpenAI Docs](https://developers.openai.com/api/docs/guides/function-calling).
+The Responses adapter sends `parallel_tool_calls: true`. The model may return multiple calls;
+only consecutive tools declared `readOnly` execute concurrently. Memory writes and undeclared
+tools execute serially. Queries that need an earlier result remain separate model rounds.
 Budget exhaustion disables further tools and forces an answer from available results. Unexpected
 oversized call batches execute only within both caps; skipped calls receive paired budget errors.
 The query deadline cancels pending HTTP requests and closes response streams, reserving time for
@@ -294,8 +324,9 @@ settings are in `src/main/resources/application.yaml` and examples in `config.ya
 The provider must support Responses streaming, function calling, reasoning and encrypted
 reasoning replay; query embeddings use the index's recorded embedding model.
 
-Configuration is loaded at server startup. Restart after changing `api_key`, `chat_model`
-or `openai_base_url`. `/api/health` checks the running application and local index; it does
+YAML configuration is loaded at server startup. Restart after changing `api_key`, `chat_model`,
+`openai_base_url` or tool definitions. `SOUL.md` content is reloaded before model requests.
+`/api/health` checks the running application and local index; it does
 not authenticate the key or make a model request. Chat reports explicit HTTP status/error
 codes for invalid keys, denied model access, exhausted quota, rate limits and upstream failures.
 Provider error bodies and credentials are excluded from those messages and server logs.
@@ -324,9 +355,12 @@ endpoints remain public demo data and can still be queried directly with their t
 
 All routes except the demo user list require the identity header. Client-supplied conversation
 history is no longer used: history is read exclusively from the user's owned server session.
-NDJSON event types are `status`, `tool_start`, `tool_end`, `context_compacted`, `sources`,
-`answer_reset`, `delta`, `error` and `done`. Intermediate text is reset when another tool round
-starts so the UI displays the final answer. Only `done` marks a successful stream.
+The backend emits `activity_start`, `activity_update`, `activity_end`, `tool_start`, `tool_end`,
+`context_compacted`, `sources`, `answer_reset`, `delta` and `done`; the HTTP controller emits
+`error` when a request fails. The frontend also accepts the legacy `status` event.
+Intermediate text is reset when another tool round starts so the UI displays the final answer.
+`done` terminates the stream; `partial: true` identifies an incomplete task even when an answer
+was returned. Tool events use invocation IDs so repeated calls remain distinct.
 
 History offsets count **turns**, each with a user message and assistant reply. Message pages return
 `offset`, `nextOffset`, `total`; session lists remain arrays. Search pages return `results`, `offset`,
@@ -337,19 +371,36 @@ chunks. Follow returned offsets for more; the server enforces the tool token bud
 the requested anchor when trimming a window. Legacy memory PUT `{ "content": "..." }` replaces
 USER.md and clears MEMORY.md; structured PUT preserves the separate editable sections.
 
-### Adding business APIs and testing
+### Adding Java tools
 
-Add a named tool with a strict schema and a handler in `ToolRegistry`. Extend `FinanceApiClient`
-for the fixed API path if needed; keep identity injection in Java. No changes to the agent loop
-or frontend are required. New result types should enforce budgets and provide citations.
+Implement `AgentTool` and register it with `ToolRegistry`, or register a named handler using
+`register(name, description, fields, readOnly, handler)`. Declare `readOnly` only for tools that can
+safely run beside other reads. The shorter overload and the interface default use serial execution.
+`DefaultAgentTools` contains the built-in registrations. Extend `FinanceApiClient` for a fixed API
+path if needed, keeping identity injection in Java. New tools return call-local sources; the
+registry assigns final citations before applying result budgets or storing a payload.
 The optional `agent.finance-base-url` / `FINANCE_API_BASE_URL` overrides the `/api/mock` base;
 external implementations must honor the same current-user scope and response shapes.
+
+### Validation
+
+```sh
+pnpm test:server
+pnpm test:ui
+pnpm typecheck
+pnpm build:server
+```
 
 `pnpm test:server` includes file restart/isolation, atomic writes, memory correction, context
 failure recovery, plus HTTP integration tests that boot the actual Java service. A local simulated
 OpenAI server exercises streaming, encrypted reasoning replay, tool errors, API scope, portfolio
 math, Chinese excerpt limits, memory extraction/archiving, compression, cancellation and round
-limits. These tests make no paid model or embedding requests.
+limits. Additional tests use an independent `Model` implementation to exercise parallel reads,
+out-of-order completion, unique citations, memory write barriers, exact call budgets, partial-result
+recovery and disconnected clients. Network tests cover simultaneous blocked response bodies and
+pending headers; worker tests verify that cancellation and caller interruption preserve file writes.
+SOUL tests verify bundled fallback, live edits and propagation alongside user memory. Frontend tests
+check invocation matching and execution-state updates. These tests make no paid model or embedding requests.
 
 ## Financial mock API
 
