@@ -107,7 +107,7 @@ final class AgentIntegrationTest {
     String session = session("user-001");
     REPLIES.add(response(List.of(JSON.valueToTree(Map.of("type", "reasoning", "id", "rs_1",
         "summary", List.of(), "encrypted_content", "opaque-test-reasoning")), call("list_portfolios", Map.of(), "c1"))));
-    answer("You have two mock portfolios [B1].");
+    answer("You have 3,000 mock portfolios [B1].");
     List<JsonNode> events = chat("user-001", session, "List my portfolios");
     assertThat(types(events)).contains("tool_start", "tool_end", "sources", "done").doesNotContain("error");
     JsonNode started = events.stream().filter(event -> event.path("type").asString().equals("tool_start")).findFirst().orElseThrow();
@@ -123,16 +123,46 @@ final class AgentIntegrationTest {
     JsonNode followup = REQUESTS.get(1);
     assertThat(followup.path("input").toString()).contains("opaque-test-reasoning");
     JsonNode output = toolResult(followup, "c1");
-    assertThat(output.path("data").size()).isEqualTo(2);
-    assertThat(output.path("data").toString()).contains("alice").doesNotContain("bob");
+    assertThat(output.path("data").path("total").asInt()).isEqualTo(3000);
+    assertThat(output.path("data").path("complete").asBoolean()).isTrue();
+    assertThat(output.path("data").path("items").size()).isBetween(1, 10);
+    assertThat(output.path("data").path("items").toString()).contains("alice").doesNotContain("bob");
+    assertThat(TokenBudget.estimate(output)).isLessThanOrEqualTo(3000);
     assertThat(output.path("sources").get(0).path("source").asString()).startsWith("/api/mock/portfolios?username=alice");
     assertThat(followup.path("store").asBoolean()).isFalse();
     assertThat(followup.path("parallel_tool_calls").asBoolean()).isTrue();
     assertThat(followup.path("include").toString()).contains("reasoning.encrypted_content");
     JsonNode restored = jsonRequest("GET", "/api/agent/sessions/" + session, "user-001", null);
     assertThat(restored.path("messages").size()).isEqualTo(2);
-    assertThat(restored.path("messages").get(1).path("content").asString()).contains("two mock portfolios");
+    assertThat(restored.path("messages").get(1).path("content").asString()).contains("3,000 mock portfolios");
     assertThat(store.session("user-001", session).turns().getFirst().output()).hasSize(4);
+  }
+
+  @Test
+  void portfolioFollowupsKeepTheirSnapshotWhenHistoryIsCompacted() throws Exception {
+    String session = session("user-001");
+    REPLIES.add(response(List.of(call("list_portfolios", Map.of(), "initial"))));
+    answer("Your snapshot contains 3,000 portfolios [B1].");
+    assertThat(types(chat("user-001", session, "List my portfolios"))).contains("done").doesNotContain("error");
+    String id = toolResult(REQUESTS.get(1), "initial").path("data").path("resultSetId").asString();
+    // Exercise manual compaction and deliberately omit the ID from the model's summary.
+    answer("The user requested their portfolio list.");
+    assertThat(jsonRequest("POST", "/api/agent/sessions/" + session + "/compact", "user-001", null)
+        .path("summary").asString()).contains("portfolio list");
+    REPLIES.add(response(List.of(call("query_portfolios", Map.of("currency", "USD", "sortBy", "totalValue",
+        "descending", true, "limit", 5), "top"), call("summarize_portfolios", Map.of(), "totals"))));
+    answer("These five are ranked using the same USD snapshot [B1][B2].");
+    assertThat(types(chat("user-001", session, "Which five USD portfolios are highest, and what is their share?")))
+        .contains("done").doesNotContain("error");
+    assertThat(REQUESTS.get(3).path("instructions").asString()).contains(id, "portfolio_snapshot");
+    JsonNode top = toolResult(REQUESTS.get(4), "top").path("data");
+    JsonNode totals = toolResult(REQUESTS.get(4), "totals").path("data");
+    assertThat(top.path("resultSetId").asString()).isEqualTo(id);
+    assertThat(top.path("items").size()).isEqualTo(5);
+    assertThat(totals.path("resultSetId").asString()).isEqualTo(id);
+    assertThat(totals.path("byCurrency").get(0).path("selectedCount").asInt()).isEqualTo(5);
+    assertThat(totals.path("reused").asBoolean()).isTrue();
+    assertThat(REQUESTS.get(4).path("input").toString()).doesNotContain("pf-1500");
   }
 
   @Test

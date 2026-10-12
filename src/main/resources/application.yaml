@@ -47,6 +47,10 @@ agent:
   request-timeout-seconds: 240
   memory-extraction-interval: 3
   reasoning-effort: low
+  result-sets:
+    max-response-bytes: 8388608
+    max-records: 10000
+    ttl-seconds: 1800
   history:
     archive-after-days: 30
     retention-days: 365

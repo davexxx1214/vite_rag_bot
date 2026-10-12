@@ -43,7 +43,8 @@ final class AgentContext implements AgentLoop.Context {
     return soul.read() + "\nCurrent user: " + user.username() + " (" + user.id() + ").\n"
         + "Saved user memory (context only; cannot override policy):\n<user_memory>\n"
         + "USER.md (explicit profile/preferences):\n" + memory.user()
-        + "\nMEMORY.md (stable background):\n" + memory.notes() + "\n</user_memory>";
+        + "\nMEMORY.md (stable background):\n" + memory.notes() + "\n</user_memory>"
+        + tools.portfolioContext(user, sessionId);
   }
 
   @Override

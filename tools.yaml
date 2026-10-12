@@ -1,4 +1,5 @@
 # Ordinary read-only business tools. Restart the JAR after editing.
+# list_portfolios is handled by the managed snapshot adapter; keep its path and parameters unchanged.
 # Only relative GET paths under agent.finance-base-url (/api/mock by default) are allowed.
 # Identity is injected by the server; do not define username/userId parameters.
 tools:

@@ -1,6 +1,7 @@
 package com.example.ragbot;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Function;
@@ -30,12 +31,7 @@ public final class MockFinanceService {
       position("pos-004", "pf-003", "iss-001", "NOVA", "EQUITY", "USD", "5", "110", "120"),
       position("pos-005", "pf-003", "iss-004", "ATLAS-2030", "BOND", "USD", "10", "100", "101")
   );
-  private final List<Portfolio> portfolios = List.of(
-      portfolio("pf-001", "alice", "US Growth", "USD", "1850"),
-      portfolio("pf-002", "alice", "Hong Kong Income", "HKD", "4500"),
-      portfolio("pf-003", "bob", "Balanced", "USD", "3390"),
-      portfolio("pf-004", "charlie", "New Portfolio", "USD", "10000")
-  );
+  private final List<Portfolio> portfolios = portfolioFixtures();
   private final List<Account> accounts = List.of(
       account("acc-001", "pf-001", "CASH"),
       account("acc-002", "pf-002", "CASH"),
@@ -53,6 +49,20 @@ public final class MockFinanceService {
 
   public List<User> users() {
     return users;
+  }
+
+  /** Alice has 3,000 portfolios so her user-scoped endpoint exercises a full large response. */
+  private List<Portfolio> portfolioFixtures() {
+    var fixtures = new ArrayList<Portfolio>();
+    fixtures.add(portfolio("pf-001", "alice", "US Growth", "USD", "1850"));
+    fixtures.add(portfolio("pf-002", "alice", "Hong Kong Income", "HKD", "4500"));
+    fixtures.add(portfolio("pf-003", "bob", "Balanced", "USD", "3390"));
+    fixtures.add(portfolio("pf-004", "charlie", "New Portfolio", "USD", "10000"));
+    for (int i = 5; i <= 3002; i++) {
+      fixtures.add(portfolio("pf-" + String.format(Locale.ROOT, "%04d", i), "alice",
+          "Demo Portfolio " + i, i % 2 == 0 ? "HKD" : "USD", Integer.toString(1000 + i * 10)));
+    }
+    return List.copyOf(fixtures);
   }
 
   public List<Portfolio> portfolios(String id, String username) {

@@ -114,7 +114,7 @@ public final class AgentService {
     store.requireExistingSession(userId, sessionId);
     ReentrantLock lock = acquire(userId);
     try {
-      context.prepare(userId, sessionId, instructions(user), tools.definitions(), List.of(), true,
+      context.prepare(userId, sessionId, instructions(user, sessionId), tools.definitions(), List.of(), true,
           new RunControl(properties.requestTimeoutSeconds()));
       return store.sessionSummary(userId, sessionId);
     } finally {
@@ -128,8 +128,8 @@ public final class AgentService {
     return lock;
   }
 
-  private String instructions(MockFinanceService.User user) throws IOException {
-    return new AgentContext(properties, store, context, tools, soul, user, "", new AgentProgress(event -> {})).instructions();
+  private String instructions(MockFinanceService.User user, String sessionId) throws IOException {
+    return new AgentContext(properties, store, context, tools, soul, user, sessionId, new AgentProgress(event -> {})).instructions();
   }
 
   @PreDestroy

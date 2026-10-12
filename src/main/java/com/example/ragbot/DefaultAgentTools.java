@@ -13,7 +13,7 @@ final class DefaultAgentTools {
   private DefaultAgentTools() {}
 
   static void register(ToolRegistry registry, ObjectMapper mapper, MemoryStore store,
-      ContextManager context, FinanceApiClient finance, RagChatService knowledge, BusinessTools business) {
+      ContextManager context, FinanceApiClient finance, RagChatService knowledge, BusinessTools business, PortfolioTools portfolios) {
     registry.register("search_docs", "Search the local help knowledge base for terminology, rules or API documentation. Cite returned sources.",
         Map.of("query", textSchema("A standalone knowledge search query")), true, (args, scope) -> {
           RagRetrieval retrieval = knowledge.retrieve(text(args, "query"), scope.control());
@@ -28,6 +28,12 @@ final class DefaultAgentTools {
           return result(mapper, Map.of("excerpts", excerpts, "sources", sources), sources);
         });
     for (var tool : business.definitions()) {
+      if (tool.name().equals("list_portfolios")) {
+        if (!tool.path().equals("/portfolios") || !tool.parameters().isEmpty())
+          throw new IllegalArgumentException("list_portfolios uses the managed /portfolios snapshot adapter; backend parameters are not supported");
+        portfolios.register(registry, tool);
+        continue;
+      }
       registry.register(tool.name(), tool.description(), tool.fields(), true, (args, scope) -> {
         String path = tool.resolvedPath(args);
         Map<String, String> query = tool.query(args);

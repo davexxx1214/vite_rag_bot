@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.web.server.context.WebServerInitializedEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
@@ -28,12 +29,19 @@ import tools.jackson.databind.ObjectMapper;
 public final class FinanceApiClient {
   private final AgentProperties properties;
   private final ObjectMapper mapper;
+  private final ResultSetProperties resultSets;
   private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
   private volatile URI localBaseUrl;
 
   public FinanceApiClient(AgentProperties properties, ObjectMapper mapper) {
+    this(properties, mapper, ResultSetProperties.defaults());
+  }
+
+  @Autowired
+  public FinanceApiClient(AgentProperties properties, ObjectMapper mapper, ResultSetProperties resultSets) {
     this.properties = properties;
     this.mapper = mapper;
+    this.resultSets = resultSets;
   }
 
   @EventListener
@@ -77,6 +85,16 @@ public final class FinanceApiClient {
 
   public JsonNode get(String path, Map<String, String> query, MockFinanceService.User user, RunControl control)
       throws IOException, InterruptedException {
+    return getBounded(path, query, user, control, 131_072);
+  }
+
+  public JsonNode portfolios(MockFinanceService.User user, RunControl control)
+      throws IOException, InterruptedException {
+    return getBounded("/portfolios", Map.of(), user, control, resultSets.maxResponseBytes());
+  }
+
+  private JsonNode getBounded(String path, Map<String, String> query, MockFinanceService.User user,
+      RunControl control, int maxBytes) throws IOException, InterruptedException {
     control.check();
     HttpRequest request = HttpRequest.newBuilder(uri(path, query, user))
         .timeout(Duration.ofSeconds(Math.min(10, Math.max(1, control.timeout().toSeconds()))))
@@ -84,9 +102,17 @@ public final class FinanceApiClient {
     HttpResponse<InputStream> response = control.send(http, request);
     try (InputStream body = response.body()) {
       try {
-        byte[] bytes = body.readNBytes(131_073);
-        if (bytes.length > 131_072) throw new IOException("Finance API result is too large; narrow the query");
-        JsonNode result = mapper.readTree(bytes);
+        byte[] bytes = body.readNBytes(maxBytes + 1);
+        control.check();
+        if (bytes.length > maxBytes) throw new IOException("Finance API result is too large; narrow the query");
+        JsonNode result;
+        try {
+          result = mapper.readerFor(JsonNode.class)
+              .with(tools.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+              .with(tools.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readValue(bytes);
+        } catch (tools.jackson.core.JacksonException error) {
+          throw new IOException("Finance API returned incomplete or invalid JSON", error);
+        }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
           throw new ApiRequestException(HttpStatus.valueOf(response.statusCode()),
               result.path("error").asString("Finance query failed"));

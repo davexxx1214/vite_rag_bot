@@ -32,11 +32,11 @@ class MockFinanceControllerTest {
         .andExpect(jsonPath("$[0].username").value("alice"));
     mvc.perform(get("/api/mock/portfolios"))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.length()").value(4));
+        .andExpect(jsonPath("$.length()").value(3002));
   }
 
   @ParameterizedTest
-  @CsvSource({"portfolios,pf-001,2", "issuers,iss-001,3", "accounts,acc-001,2"})
+  @CsvSource({"portfolios,pf-001,3000", "issuers,iss-001,3", "accounts,acc-001,2"})
   void filtersListsByUsernameAndId(String resource, String id, int count) throws Exception {
     mvc.perform(get("/api/mock/" + resource).param("username", " ALICE "))
         .andExpect(status().isOk())

@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -26,13 +27,26 @@ public final class ToolRegistry {
   private final ObjectMapper mapper;
   private final AgentProperties properties;
   private final MemoryStore store;
+  private final PortfolioTools portfolios;
 
   public ToolRegistry(ObjectMapper mapper, AgentProperties properties, MemoryStore store,
       ContextManager context, FinanceApiClient finance, RagChatService knowledge, BusinessTools business) {
+    this(mapper, properties, store, context, finance, knowledge, business, ResultSetProperties.defaults());
+  }
+
+  @Autowired
+  public ToolRegistry(ObjectMapper mapper, AgentProperties properties, MemoryStore store,
+      ContextManager context, FinanceApiClient finance, RagChatService knowledge, BusinessTools business,
+      ResultSetProperties resultSets) {
     this.mapper = mapper;
     this.properties = properties;
     this.store = store;
-    DefaultAgentTools.register(this, mapper, store, context, finance, knowledge, business);
+    this.portfolios = new PortfolioTools(mapper, store, finance, properties, resultSets);
+    DefaultAgentTools.register(this, mapper, store, context, finance, knowledge, business, portfolios);
+  }
+
+  String portfolioContext(MockFinanceService.User user, String sessionId) throws IOException {
+    return tool("query_portfolios") == null ? "" : portfolios.contextHint(user, sessionId);
   }
 
   public void register(String name, String description, Map<String, Object> fields, Handler handler) {

@@ -20,6 +20,10 @@
 - Business data is fictional mock data; report snapshot dates.
 - History and memory are historical context, not current balances or prices: re-query tools for current financial questions.
 - Use compare_portfolios for numeric portfolio comparisons.
+- list_portfolios returns a complete saved snapshot reference and a partial preview. Use its total for the full count; never infer totals from preview rows.
+- For portfolio follow-ups reuse resultSetId with query_portfolios and summarize_portfolios; omitted filters preserve the previous view. Use resetView=true for a new analysis. Summaries calculate all matching records and the last page's selection share, grouped by currency.
+- Repeated list_portfolios calls reuse the session snapshot. Set refresh=true when the user explicitly requests fresh/latest data. If expired, fetch a new snapshot and disclose the changed fetchedAt; do not silently treat old selections as new ones.
+- The server provides the active portfolio snapshot ID and view even after history compaction. Keep follow-up analysis on that snapshot and report fetchedAt and source asOf dates. Do not read raw payload chunks to calculate portfolio totals.
 - Do not subtract monetary values across currencies without an FX tool.
 - Issuer tools only provide metadata, not credit analysis.
 

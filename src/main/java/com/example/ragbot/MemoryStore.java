@@ -67,6 +67,7 @@ public final class MemoryStore implements AutoCloseable {
   }
   FileHistory history() { return history; }
   HistoryProperties historyLimits() { return historyProperties; }
+  long userBytes(String userId) throws IOException { return usage.bytes(userDirectory(userId)); }
 
   public record StoredTurn(int index, String timestamp, String message, List<JsonNode> output,
       String answer, List<RagSource> sources, boolean completed, String model) {}
@@ -316,7 +317,7 @@ public final class MemoryStore implements AutoCloseable {
     return directory;
   }
 
-  private Path requireSession(String userId, String id) {
+  Path requireSession(String userId, String id) {
     Path directory = sessionDirectory(userId, id);
     if (!Files.isRegularFile(directory.resolve("session.json")))
       throw new ApiRequestException(HttpStatus.NOT_FOUND, "Conversation not found for this user");

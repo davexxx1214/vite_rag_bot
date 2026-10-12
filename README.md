@@ -123,6 +123,7 @@ embedding path continues to use `OpenAiClient` independently of the chat interfa
 | --- | --- |
 | `search_docs` | Embed a search query and retrieve excerpts from the local JSON vector index |
 | `list_portfolios`, `get_portfolio` | Find/read the current user's portfolios |
+| `query_portfolios`, `summarize_portfolios` | Filter/page a saved snapshot and calculate complete-view totals and selected-page shares |
 | `get_positions`, `get_transactions`, `get_accounts` | Read holdings, trades and accounts |
 | `list_issuers`, `get_issuer` | Read issuers visible through that user's holdings |
 | `compare_portfolios` | Calculate monetary differences and allocation percentages in Java |
@@ -133,6 +134,47 @@ All business tool requests inject the current user's username on the server. The
 select another username or an arbitrary URL. Cross-user detail requests return tool errors.
 Different currencies are compared separately; no FX rate or cross-currency difference is invented.
 Issuer responses contain metadata, not financial statements or credit ratings.
+
+### Large portfolio snapshots and follow-ups
+
+Alice's unpaginated mock endpoint returns 3,000 portfolios (3,002 across all users, retaining
+Bob's and Charlie's original fixtures). `list_portfolios` receives the complete response once,
+validates ownership, unique IDs, required amounts and timestamps, and saves an immutable
+`resultSetId` under the current user's session. The model receives metadata and at most ten
+preview rows, bounded by the existing 3,000-token tool budget. Preview rows never represent
+the complete list. `sourceAsOfFrom`/`sourceAsOfThrough` describe backend data dates; `fetchedAt`
+records when the snapshot was received.
+
+Repeated `list_portfolios` calls in the same session reuse the snapshot. Lookup and fetch
+share a user lock, so concurrent identical loads issue one backend request. Set `refresh=true`
+for an explicit latest-data request. Refresh creates a new ID and keeps older unexpired IDs
+and their views available. Expired IDs fail with a tool error instead of silently changing
+the data; calling `list_portfolios` fetches a new snapshot and removes expired snapshot files.
+Session deletion removes its result sets, and files count against the user storage quota.
+
+`query_portfolios` filters by currency, name substring or exact ID, sorts, selects fields,
+and pages by record offset. The hard page maximum is 20; the token budget may return fewer,
+with `nextOffset` identifying the next record. Omitted filters retain the previous view;
+`resetView=true` clears it. Monetary rankings require one currency. `summarize_portfolios`
+uses Java `BigDecimal` over every matching record, grouping amounts by currency and reporting
+the last query page's selected total and percentage of that currency's filtered total.
+If many currency groups exceed the output budget, follow `nextCurrencyOffset` using
+`currencyOffset` to read the remaining groups.
+
+For example, call `list_portfolios`, then `query_portfolios(currency="USD")`, then
+`query_portfolios(sortBy="totalValue", descending=true, limit=5)`, and finally
+`summarize_portfolios`. Only the first call fetches the backend. Pass the returned ID, or
+omit it to use the active session snapshot. Snapshot files and current conditions/selected
+IDs survive restarts; the small active pointer is added to model instructions every round,
+so history compaction does not force a new backend fetch.
+
+Configure `agent.result-sets.max-response-bytes` (default 8 MiB), `max-records` (10,000), and
+`ttl-seconds` (1,800). These reception limits apply to the portfolio snapshot adapter;
+ordinary finance GET tools retain their 128 KiB response cap. Invalid, incomplete or oversized
+responses are never published as complete snapshots. The adapter currently requires the
+mock portfolio schema, including `username` on each row; adapt that validation when connecting
+a backend with a different ownership contract. These GET-based tools have no trade/write
+operation to invalidate snapshots; future writes should invalidate affected result sets.
 
 ### Parallel read tools
 
@@ -151,7 +193,9 @@ history and partial-answer synthesis if another read fails or exceeds the query 
 To add a Java tool, register an `AgentTool`, or use `ToolRegistry.register(name, description,
 fields, readOnly, handler)`. The shorter overload defaults to serial execution. Ordinary GET
 tools from `tools.yaml`, knowledge search, portfolio comparison and history search are declared
-reads; `remember` and `forget_memory` stay serial.
+reads; `remember`, `forget_memory` and the managed portfolio snapshot tools stay serial.
+Portfolio tools maintain the current view/selection, so later calls observe earlier results
+in model order.
 
 ### Adding ordinary business tools
 
