@@ -6,9 +6,9 @@ import java.util.List;
 
 /** Shared bounded summarization; callers retain their own memory/context rules. */
 final class TextSummaries {
-  private final OpenAiClient model;
+  private final Model model;
   private final AgentProperties properties;
-  TextSummaries(OpenAiClient model, AgentProperties properties) { this.model = model; this.properties = properties; }
+  TextSummaries(Model model, AgentProperties properties) { this.model = model; this.properties = properties; }
   String summarize(String instructions, String input, int budget, RunControl control)
       throws IOException, InterruptedException {
     String text = model.summarize(instructions + "\nOutput at most " + (budget * 2)

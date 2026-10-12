@@ -48,16 +48,16 @@ class AgentDeadlineTest {
     var mapper = new JsonMapper();
     var props = new AgentProperties(root, null, 64_000, 48_000, 32_000, 16_000, 1_800, 8_000,
         0, 2, 8, 3_000, 30, 3, "low", 12, 5);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     AtomicInteger requests = new AtomicInteger();
     when(model.respond(anyString(), anyList(), anyList(), anyBoolean(), any(), any())).thenAnswer(invocation -> {
-      if (requests.getAndIncrement() == 0) return new OpenAiClient.ModelResponse(List.of(mapper.valueToTree(Map.of(
+      if (requests.getAndIncrement() == 0) return new Model.Turn(List.of(mapper.valueToTree(Map.of(
           "type", "function_call", "name", "round_lookup", "call_id", "known", "arguments", "{}"))), "", 100, 10);
       assertThat((boolean) invocation.getArgument(3)).isFalse();
-      if (invalidFinal) return new OpenAiClient.ModelResponse(List.of(mapper.valueToTree(Map.of(
+      if (invalidFinal) return new Model.Turn(List.of(mapper.valueToTree(Map.of(
           "type", "function_call", "name", "round_lookup", "call_id", "ignored", "arguments", "{}"))), "", 100, 10);
-      ((OpenAiClient.TextSink) invocation.getArgument(4)).accept("Known portfolio data.");
-      return new OpenAiClient.ModelResponse(List.of(AgentTestSupport.answer(mapper, "Known portfolio data.")),
+      ((Model.TextSink) invocation.getArgument(4)).accept("Known portfolio data.");
+      return new Model.Turn(List.of(AgentTestSupport.answer(mapper, "Known portfolio data.")),
           "Known portfolio data.", 100, 10);
     });
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
@@ -65,7 +65,7 @@ class AgentDeadlineTest {
       var tools = new ToolRegistry(mapper, props, store, context, mock(FinanceApiClient.class),
           mock(RagChatService.class), new BusinessTools("classpath:tools.yaml"));
       tools.register("round_lookup", "Known result", Map.of(), (args, scope) ->
-          new ToolRegistry.Result(mapper.valueToTree(Map.of("id", "pf-round")), List.of()));
+          new AgentTool.Result(mapper.valueToTree(Map.of("id", "pf-round")), List.of()));
       var agent = new AgentService(props, AgentTestSupport.rag(), store, context, tools, model, mapper,
           new SoulInstructions("classpath:SOUL.md"));
       String session = store.createSession("user-001");
@@ -86,18 +86,18 @@ class AgentDeadlineTest {
   @Test
   void disconnectAfterQueryStillPersistsTheResultAndDoesNotStartSynthesis() throws Exception {
     var mapper = new JsonMapper(); var props = AgentTestSupport.properties(root);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     AtomicInteger requests = new AtomicInteger();
     when(model.respond(anyString(), anyList(), anyList(), anyBoolean(), any(), any())).thenAnswer(invocation -> {
       requests.incrementAndGet();
-      return new OpenAiClient.ModelResponse(List.of(mapper.valueToTree(Map.of("type", "function_call",
+      return new Model.Turn(List.of(mapper.valueToTree(Map.of("type", "function_call",
           "name", "disconnect_lookup", "call_id", "known", "arguments", "{}"))), "", 100, 10);
     });
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
       var context = new ContextManager(props, AgentTestSupport.rag(), store, model, mapper);
       var tools = new ToolRegistry(mapper, props, store, context, mock(FinanceApiClient.class),
           mock(RagChatService.class), new BusinessTools("classpath:tools.yaml"));
-      tools.register("disconnect_lookup", "Known result", Map.of(), (args, scope) -> new ToolRegistry.Result(
+      tools.register("disconnect_lookup", "Known result", Map.of(), (args, scope) -> new AgentTool.Result(
           mapper.valueToTree(Map.of("id", "pf-disconnect")), List.of(new RagSource("B1", "Test", "Test", "/test", 1))));
       var agent = new AgentService(props, AgentTestSupport.rag(), store, context, tools, model, mapper,
           new SoulInstructions("classpath:SOUL.md"));
@@ -117,11 +117,11 @@ class AgentDeadlineTest {
     var mapper = new JsonMapper();
     var props = new AgentProperties(root, null, 64_000, 48_000, 32_000, 16_000, 1_800, 8_000,
         0, 16, 8, 3_000, 5, 3, "low", 12, 1);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     AtomicInteger requests = new AtomicInteger();
     when(model.respond(anyString(), anyList(), anyList(), anyBoolean(), any(), any())).thenAnswer(invocation -> {
       int round = requests.getAndIncrement();
-      if (round == 0) return new OpenAiClient.ModelResponse(List.of(mapper.valueToTree(Map.of(
+      if (round == 0) return new Model.Turn(List.of(mapper.valueToTree(Map.of(
           "type", "function_call", "name", "deadline_lookup", "call_id", "known", "arguments", "{}"))), "", 100, 10);
       if (round == 1 || blockFinal) {
         RunControl control = invocation.getArgument(5);
@@ -140,15 +140,15 @@ class AgentDeadlineTest {
       }
       assertThat((boolean) invocation.getArgument(3)).isFalse();
       String text = "Retrieved pf-deadline; remaining work was stopped.";
-      ((OpenAiClient.TextSink) invocation.getArgument(4)).accept(text);
-      return new OpenAiClient.ModelResponse(List.of(AgentTestSupport.answer(mapper, text)), text, 100, 10);
+      ((Model.TextSink) invocation.getArgument(4)).accept(text);
+      return new Model.Turn(List.of(AgentTestSupport.answer(mapper, text)), text, 100, 10);
     });
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
       var context = new ContextManager(props, AgentTestSupport.rag(), store, model, mapper);
       var tools = new ToolRegistry(mapper, props, store, context, mock(FinanceApiClient.class),
           mock(RagChatService.class), new BusinessTools("classpath:tools.yaml"));
       tools.register("deadline_lookup", "Known result", Map.of(), (args, scope) ->
-          new ToolRegistry.Result(mapper.valueToTree(Map.of("id", "pf-deadline", "mock", true)), List.of()));
+          new AgentTool.Result(mapper.valueToTree(Map.of("id", "pf-deadline", "mock", true)), List.of()));
       var agent = new AgentService(props, AgentTestSupport.rag(), store, context, tools, model, mapper,
           new SoulInstructions("classpath:SOUL.md"));
       String session = store.createSession("user-001");

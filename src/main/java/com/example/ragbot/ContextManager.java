@@ -28,7 +28,7 @@ public final class ContextManager {
   private final TextSummaries summaries;
 
   public ContextManager(AgentProperties properties, RagProperties rag, MemoryStore store,
-      OpenAiClient model, ObjectMapper mapper) {
+      Model model, ObjectMapper mapper) {
     this.properties = properties;
     this.rag = rag;
     this.store = store;

@@ -82,8 +82,14 @@ The design follows a small Pi-style loop implemented directly in Java:
 4. Stream the final answer and atomically save the full turn, including tool records.
 
 There are no subprocess agents, shell tools, extra Node service or database dependencies.
-`AgentService` owns the loop; `ToolRegistry` dispatches tools; `ContextManager` compresses working
-context; `CoreMemoryManager` updates stable preferences; `MemoryStore` owns file transactions.
+`AgentService` owns request locks, deadlines and recovery; `AgentLoop` owns model/tool rounds.
+`Model` isolates model calls, with `OpenAiClient` adapting the Responses API and preserving opaque
+reasoning items. `AgentTool` describes and executes business tools; `DefaultAgentTools` registers
+the help, HTTP, comparison and memory implementations. `ToolRegistry` validates arguments and
+bounds results; `ContextManager` compresses working context; `CoreMemoryManager` updates stable
+preferences; `MemoryStore` owns file transactions. `AgentHistoryRecorder` commits one full history
+turn, including partial/failed requests. `NdjsonAgentListener` maps typed `AgentEvent` events to the
+existing frontend protocol.
 `HistoryMaintenance` owns scheduled archive/retention and incremental quota accounting.
 `FinanceApiClient` makes real HTTP
 requests to this JAR's mock endpoints, automatically using its actual listening port.
@@ -102,6 +108,25 @@ All business tool requests inject the current user's username on the server. The
 select another username or an arbitrary URL. Cross-user detail requests return tool errors.
 Different currencies are compared separately; no FX rate or cross-currency difference is invented.
 Issuer responses contain metadata, not financial statements or credit ratings.
+
+### Parallel read tools
+
+The model can request multiple tools in one response. `AgentToolExecutor` executes consecutive
+tools explicitly marked `readOnly` on virtual threads. A memory write or any tool without that
+declaration is a serial barrier: earlier reads finish before it runs, and later reads start after
+it completes. Dependent queries remain separate model rounds. Existing round/call/context/time
+budgets are unchanged; skipped calls receive paired error results without executing.
+
+Results are fed back in the model's call order. The coordinator assigns unique `[S#]` / `[B#]`
+citations before truncation or payload storage, preserving chunked access to oversized results.
+Cancellation closes every pending HTTP request and active response stream; workers finish their
+file writes before the user lock is released. A successful sibling result remains available to
+history and partial-answer synthesis if another read fails or exceeds the query deadline.
+
+To add a Java tool, register an `AgentTool`, or use `ToolRegistry.register(name, description,
+fields, readOnly, handler)`. The shorter overload defaults to serial execution. Ordinary GET
+tools from `tools.yaml`, knowledge search, portfolio comparison and history search are declared
+reads; `remember` and `forget_memory` stay serial.
 
 ### Adding ordinary business tools
 

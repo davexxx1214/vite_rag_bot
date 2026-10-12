@@ -19,13 +19,8 @@ import java.util.Map;
 import org.springframework.stereotype.Component;
 
 @Component
-public class OpenAiClient {
+public class OpenAiClient implements Model {
   private static final int EMBEDDING_BATCH_SIZE = 64;
-
-  @FunctionalInterface
-  public interface TextSink {
-    void accept(String text) throws IOException;
-  }
 
   private final RagProperties properties;
   private final ObjectMapper objectMapper;
@@ -114,20 +109,15 @@ public class OpenAiClient {
     return List.copyOf(result);
   }
 
-  public record ModelResponse(List<JsonNode> output, String text, int inputTokens, int outputTokens) {
-    public List<JsonNode> calls() {
-      return output.stream().filter(item -> item.path("type").asString("").equals("function_call")).toList();
-    }
-  }
-
-  public ModelResponse respond(
-      String instructions, List<JsonNode> input, List<Map<String, Object>> tools,
+  @Override
+  public Turn respond(
+      String instructions, List<JsonNode> input, List<AgentTool> tools,
       boolean allowTools, TextSink sink, RunControl control
   ) throws IOException, InterruptedException {
     Map<String, Object> body = responseBody(instructions, input, agentProperties.maxOutputTokens());
-    body.put("tools", tools);
+    body.put("tools", tools.stream().map(OpenAiClient::toolDefinition).toList());
     body.put("tool_choice", allowTools ? "auto" : "none");
-    body.put("parallel_tool_calls", false);
+    body.put("parallel_tool_calls", true);
     body.put("stream", true);
     body.put("stream_options", Map.of("include_obfuscation", false));
 
@@ -159,7 +149,7 @@ public class OpenAiClient {
           if (!data.isEmpty()) dispatchEvent(data.toString(), state, sink);
         }
         if (state.completed == null) throw new IOException("OpenAI stream ended without a completed response");
-        ModelResponse result = parseResponse(state.completed);
+        Turn result = parseResponse(state.completed);
         if (!state.receivedText && !result.text().isBlank()) sink.accept(result.text());
         return result;
       } finally {
@@ -168,6 +158,7 @@ public class OpenAiClient {
     }
   }
 
+  @Override
   public String summarize(String instructions, String input, int maxTokens, RunControl control)
       throws IOException, InterruptedException {
     Map<String, Object> body = responseBody(instructions,
@@ -206,7 +197,12 @@ public class OpenAiClient {
     return body;
   }
 
-  private ModelResponse parseResponse(JsonNode response) throws IOException {
+  static Map<String, Object> toolDefinition(AgentTool tool) {
+    return Map.of("type", "function", "name", tool.name(), "description", tool.description(),
+        "parameters", tool.parameters(), "strict", true);
+  }
+
+  private Turn parseResponse(JsonNode response) throws IOException {
     if (!response.path("status").asString("").equals("completed") || !response.path("output").isArray()) {
       throw new IOException("The model response was incomplete or invalid");
     }
@@ -223,7 +219,7 @@ public class OpenAiClient {
       }
     }
     JsonNode usage = response.path("usage");
-    return new ModelResponse(List.copyOf(output), text.toString(),
+    return new Turn(List.copyOf(output), text.toString(),
         usage.path("input_tokens").asInt(0), usage.path("output_tokens").asInt(0));
   }
 

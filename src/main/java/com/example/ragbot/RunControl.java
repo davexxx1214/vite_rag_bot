@@ -6,6 +6,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -13,58 +18,58 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /** Cancels only network work; the run's file writes can finish without a thread interrupt. */
-final class RunControl {
+public final class RunControl {
   private final long deadline;
   private volatile boolean cancelled;
   private volatile boolean workExpired;
   private boolean finalPhase;
-  private InputStream stream;
-  private CompletableFuture<HttpResponse<InputStream>> request;
+  private final Map<Thread, InputStream> streams = new HashMap<>();
+  private final Set<CompletableFuture<HttpResponse<InputStream>>> requests = new HashSet<>();
 
-  RunControl(int timeoutSeconds) {
+  public RunControl(int timeoutSeconds) {
     deadline = System.nanoTime() + Duration.ofSeconds(timeoutSeconds).toNanos();
   }
 
-  synchronized void attach(InputStream input) throws IOException {
+  public synchronized void attach(InputStream input) throws IOException {
     check();
-    stream = input;
+    streams.put(Thread.currentThread(), input);
   }
 
-  synchronized void detach() {
-    stream = null;
+  public synchronized void detach() {
+    streams.remove(Thread.currentThread());
   }
 
-  synchronized void cancel() {
+  public synchronized void cancel() {
     cancelled = true;
     stopNetwork();
   }
 
-  synchronized void finishWork() {
+  public synchronized void finishWork() {
     if (finalPhase || cancelled) return;
     workExpired = true;
     stopNetwork();
   }
 
   private void stopNetwork() {
-    if (request != null) request.cancel(true);
-    if (stream != null) {
+    for (var request : List.copyOf(requests)) request.cancel(true);
+    for (var stream : List.copyOf(streams.values())) {
       try { stream.close(); } catch (IOException ignored) { /* Already disconnected. */ }
     }
   }
 
-  synchronized void beginFinal() throws IOException {
+  public synchronized void beginFinal() throws IOException {
     finalPhase = true;
     workExpired = false;
     check();
   }
 
-  HttpResponse<InputStream> send(HttpClient client, HttpRequest httpRequest)
+  public HttpResponse<InputStream> send(HttpClient client, HttpRequest httpRequest)
       throws IOException, InterruptedException {
     CompletableFuture<HttpResponse<InputStream>> pending;
     synchronized (this) {
       check();
       pending = client.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
-      request = pending;
+      requests.add(pending);
     }
     boolean handedOff = false;
     try {
@@ -87,21 +92,21 @@ final class RunControl {
         if (received != null) try { received.body().close(); } catch (IOException ignored) { /* Already closed. */ }
       });
       if (!handedOff) pending.cancel(true);
-      synchronized (this) { if (request == pending) request = null; }
+      synchronized (this) { requests.remove(pending); }
     }
   }
 
-  boolean workExpired() { return workExpired; }
-  boolean cancelled() { return cancelled; }
-  boolean timedOut() { return System.nanoTime() >= deadline; }
+  public boolean workExpired() { return workExpired; }
+  public boolean cancelled() { return cancelled; }
+  public boolean timedOut() { return System.nanoTime() >= deadline; }
 
-  void check() throws IOException {
+  public void check() throws IOException {
     if (System.nanoTime() >= deadline) throw new IOException("Agent request timed out");
     if (cancelled || Thread.currentThread().isInterrupted()) throw new IOException("Agent request cancelled");
     if (workExpired) throw new IOException("Query time budget reached; final answer reserved");
   }
 
-  Duration timeout() throws IOException {
+  public Duration timeout() throws IOException {
     check();
     return Duration.ofNanos(Math.max(1, Math.min(Duration.ofSeconds(40).toNanos(), deadline - System.nanoTime())));
   }

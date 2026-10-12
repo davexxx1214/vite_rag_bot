@@ -56,13 +56,13 @@ class BusinessToolsTest {
       var args = mapper.valueToTree(Map.of("id", "report-1", "limit", 3, "includeDetails", true, "query", "cash & bonds"));
       for (String user : List.of("user-001", "user-002")) {
         var result = registry.execute("get_report", args,
-            new ToolRegistry.Scope(store.user(user), store.createSession(user), 0, new RunControl(30)));
+            new AgentTool.Scope(store.user(user), store.createSession(user), 0, new RunControl(30)));
         assertThat(result.output().path("data").path("total").asInt()).isEqualTo(42);
       }
       assertThat(targets.get(0)).contains("username=alice", "limit=3", "details=true", "q=cash+%26+bonds");
       assertThat(targets.get(1)).contains("username=bob");
       assertThat(registry.status("get_report")).isEqualTo("正在查询报告…");
-      var scope = new ToolRegistry.Scope(store.user("user-001"), store.createSession("user-001"), 0, new RunControl(30));
+      var scope = new AgentTool.Scope(store.user("user-001"), store.createSession("user-001"), 0, new RunControl(30));
       var invalid = args.deepCopy(); ((tools.jackson.databind.node.ObjectNode) invalid).put("limit", "3");
       assertThatThrownBy(() -> registry.execute("get_report", invalid, scope)).isInstanceOf(ApiRequestException.class);
       ((tools.jackson.databind.node.ObjectNode) invalid).put("id", "../other");

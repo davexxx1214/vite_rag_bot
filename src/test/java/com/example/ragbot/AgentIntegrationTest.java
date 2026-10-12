@@ -127,6 +127,7 @@ final class AgentIntegrationTest {
     assertThat(output.path("data").toString()).contains("alice").doesNotContain("bob");
     assertThat(output.path("sources").get(0).path("source").asString()).startsWith("/api/mock/portfolios?username=alice");
     assertThat(followup.path("store").asBoolean()).isFalse();
+    assertThat(followup.path("parallel_tool_calls").asBoolean()).isTrue();
     assertThat(followup.path("include").toString()).contains("reasoning.encrypted_content");
     JsonNode restored = jsonRequest("GET", "/api/agent/sessions/" + session, "user-001", null);
     assertThat(restored.path("messages").size()).isEqualTo(2);
@@ -508,7 +509,7 @@ final class AgentIntegrationTest {
   @Test
   void oversizedBusinessResultsAreSavedOnceAndCanBeReadInBudgetedChunks() throws Exception {
     toolRegistry.register("large_finance_test", "Test a large financial response", Map.of(), (arguments, scope) ->
-        new ToolRegistry.Result(JSON.valueToTree(Map.of("resourceId", "pf-payload", "asOf", "2026-10-10",
+        new AgentTool.Result(JSON.valueToTree(Map.of("resourceId", "pf-payload", "asOf", "2026-10-10",
             "rows", "financial snapshot ".repeat(2000))), List.of()));
     String id = session("user-001");
     REPLIES.add(response(List.of(call("large_finance_test", Map.of(), "large"))));

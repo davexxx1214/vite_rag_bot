@@ -28,7 +28,7 @@ class ContextManagerTest {
   void compactionPersistsSummaryAndLeavesFullHistoryRecoverable() throws Exception {
     var mapper = new JsonMapper();
     var props = AgentTestSupport.properties(root);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     when(model.summarize(anyString(), anyString(), anyInt(), any())).thenReturn("Compare pf-001 and pf-002; USD versus HKD. User requested cash allocation.");
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
       String id = store.createSession("user-001");
@@ -48,7 +48,7 @@ class ContextManagerTest {
   void failedSummarizationDoesNotAdvanceTheBoundaryOrEraseMemory() throws Exception {
     var mapper = new JsonMapper();
     var props = AgentTestSupport.properties(root);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     when(model.summarize(anyString(), anyString(), anyInt(), any())).thenReturn("");
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
       String id = store.createSession("user-001");
@@ -70,7 +70,7 @@ class ContextManagerTest {
     var props = AgentTestSupport.properties(root);
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
       String id = store.createSession("user-001");
-      var context = new ContextManager(props, AgentTestSupport.rag(), store, mock(OpenAiClient.class), mapper);
+      var context = new ContextManager(props, AgentTestSupport.rag(), store, mock(Model.class), mapper);
       context.remember("user-001", id, "language", "Use English", new RunControl(30));
       context.remember("user-001", id, "language", "使用中文", new RunControl(30));
       assertThat(store.memory("user-001")).contains("使用中文").doesNotContain("Use English");
@@ -86,7 +86,7 @@ class ContextManagerTest {
   void activeCompactionKeepsTheLatestToolCallAndResultTogether() throws Exception {
     var mapper = new JsonMapper();
     var props = AgentTestSupport.properties(root);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     when(model.summarize(anyString(), anyString(), anyInt(), any())).thenReturn("Earlier portfolio results were read. Exact IDs: pf-001 and pf-002.");
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
       var context = new ContextManager(props, AgentTestSupport.rag(), store, model, mapper);
@@ -122,7 +122,7 @@ class ContextManagerTest {
         0, 16, 8, 3_000, 240, 3, "low");
     assertThat(props.inputLimit("gpt-5-mini")).isEqualTo(64_000);
     assertThat(props.inputLimit("gpt-6-luna")).isEqualTo(64_000);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     when(model.summarize(anyString(), anyString(), anyInt(), any())).thenReturn("Historical portfolio discussion.");
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
       String id = store.createSession("user-001");
@@ -136,7 +136,7 @@ class ContextManagerTest {
   @Test
   void keyedUpdatesAcrossTargetsDoNotRewriteUnrelatedEntries() throws Exception {
     var mapper = new JsonMapper(); var props = AgentTestSupport.properties(root);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
       String id = store.createSession("user-001");
       var context = new ContextManager(props, AgentTestSupport.rag(), store, model, mapper);
@@ -154,7 +154,7 @@ class ContextManagerTest {
   @Test
   void overBudgetConsolidatesARelatedPairPreservingKeysAndUnrelatedFacts() throws Exception {
     var mapper = new JsonMapper(); var props = AgentTestSupport.properties(root);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     when(model.summarize(anyString(), anyString(), anyInt(), any())).thenReturn(
         "{\"entries\":[{\"key\":\"reply_language\",\"content\":\"Chinese replies\"},{\"key\":\"document_language\",\"content\":\"Chinese documents\"}]}");
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
@@ -174,7 +174,7 @@ class ContextManagerTest {
   @Test
   void compactsBoundedBatchesUntilLongLegacyHistoryCanBeSafelyLoaded() throws Exception {
     var mapper = new JsonMapper(); var props = AgentTestSupport.properties(root);
-    var model = mock(OpenAiClient.class);
+    var model = mock(Model.class);
     when(model.summarize(anyString(), anyString(), anyInt(), any())).thenReturn("Historical portfolio discussion; recover details with search_history.");
     try (var store = new MemoryStore(props, mapper, new MockFinanceService())) {
       String id = store.createSession("user-001");

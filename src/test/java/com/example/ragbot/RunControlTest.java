@@ -63,6 +63,65 @@ class RunControlTest {
     control.check();
   }
 
+  @Test
+  void cancellationClosesAllConcurrentBodiesAndPendingHeaders() throws Exception { parallelNetworkRequests(false); }
+
+  @Test
+  void queryDeadlineClosesAllConcurrentRequestsAndAllowsFinalNetworkWork() throws Exception { parallelNetworkRequests(true); }
+
+  private void parallelNetworkRequests(boolean queryDeadline) throws Exception {
+    var entered = new CountDownLatch(2);
+    var reading = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    var control = new RunControl(30);
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    try (var pool = Executors.newVirtualThreadPerTaskExecutor(); var client = HttpClient.newHttpClient()) {
+      server.setExecutor(pool);
+      server.createContext("/", exchange -> {
+        try {
+          if (exchange.getRequestURI().getPath().equals("/ready")) {
+            exchange.sendResponseHeaders(200, 2); exchange.getResponseBody().write(new byte[] {1, 2}); return;
+          }
+          if (exchange.getRequestURI().getPath().equals("/body")) {
+            exchange.sendResponseHeaders(200, 0); exchange.getResponseBody().flush();
+          }
+          entered.countDown();
+          release.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+        finally { exchange.close(); }
+      });
+      server.start();
+      String base = "http://127.0.0.1:" + server.getAddress().getPort();
+      var futures = new java.util.ArrayList<java.util.concurrent.Future<IOException>>();
+      for (String path : java.util.List.of("/body", "/headers")) futures.add(pool.submit(() -> {
+        try {
+          var response = control.send(client, HttpRequest.newBuilder(URI.create(base + path)).GET().build());
+          try (var body = response.body()) { reading.countDown(); body.readAllBytes(); control.check(); }
+          finally { control.detach(); }
+          throw new AssertionError("Cancelled network work must stop");
+        } catch (IOException error) {
+          assertThat(Thread.currentThread().isInterrupted()).isFalse(); return error;
+        }
+      }));
+      assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+      assertThat(reading.await(5, TimeUnit.SECONDS)).isTrue();
+      // Detaching an unrelated completed request must not unregister either blocked worker.
+      var ready = control.send(client, HttpRequest.newBuilder(URI.create(base + "/ready")).GET().build());
+      try (var body = ready.body()) { assertThat(body.readAllBytes()).hasSize(2); }
+      finally { control.detach(); }
+      if (queryDeadline) control.finishWork(); else control.cancel();
+      for (var future : futures) assertThat(future.get(3, TimeUnit.SECONDS)).isInstanceOf(IOException.class);
+      assertThat(release.getCount()).isEqualTo(1);
+      if (queryDeadline) {
+        control.beginFinal();
+        var finalResponse = control.send(client, HttpRequest.newBuilder(URI.create(base + "/ready")).GET().build());
+        try (var body = finalResponse.body()) { assertThat(body.readAllBytes()).hasSize(2); }
+        finally { control.detach(); }
+      }
+      release.countDown();
+    } finally { release.countDown(); server.stop(0); }
+  }
+
   private void stalledHttp(boolean headers, boolean workBudget, int kind) throws Exception {
     var entered = new CountDownLatch(1);
     var release = new CountDownLatch(1);

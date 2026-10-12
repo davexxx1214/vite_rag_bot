@@ -20,11 +20,11 @@ final class CoreMemoryManager {
   private final AgentProperties properties;
   private final RagProperties rag;
   private final MemoryStore store;
-  private final OpenAiClient model;
+  private final Model model;
   private final ObjectMapper mapper;
   private final TextSummaries summaries;
   CoreMemoryManager(AgentProperties properties, RagProperties rag, MemoryStore store,
-      OpenAiClient model, ObjectMapper mapper, TextSummaries summaries) {
+      Model model, ObjectMapper mapper, TextSummaries summaries) {
     this.properties = properties; this.rag = rag; this.store = store;
     this.model = model; this.mapper = mapper; this.summaries = summaries;
   }

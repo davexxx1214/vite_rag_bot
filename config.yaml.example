@@ -24,7 +24,7 @@ port: 3000
 #   request-timeout-seconds: 240 # Total agent deadline; keep HTTP/browser timeouts longer
 #   max-rounds: 16
 #   max-tool-calls: 12           # Total executed calls, including failures/retries
-#   max-tool-calls-per-round: 8  # Defensive cap; official API currently sends at most one
+#   max-tool-calls-per-round: 8  # Cap per model response; consecutive read tools run concurrently
 #   final-answer-reserve-seconds: 40 # Stop query work at 200s, keep time to synthesize
 #   reasoning-effort: low
 #   history:
