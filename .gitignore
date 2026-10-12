@@ -7,3 +7,4 @@ data/agent/
 config.yaml
 npm-debug.log*
 package-lock.json
+src/visualization/renderer.generated.js

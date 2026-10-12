@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createRoot } from "react-dom/client";
 import DOMPurify from "dompurify";
@@ -39,6 +39,17 @@ import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import "./style.css";
 import { useAgentChat } from "./useAgentChat";
 import { AgentActivityPanel } from "./AgentActivityPanel";
+import { canVisualize } from "./visualAnswer";
+
+function UnavailableVisualAnswer({ onClose }: { onClose: () => void }) {
+  return <Dialog open onClose={onClose} fullWidth maxWidth="sm">
+    <DialogTitle>可视化回答</DialogTitle>
+    <DialogContent>预览组件暂时无法加载，完整文字回答仍保留在聊天中。</DialogContent>
+    <DialogActions><Button onClick={onClose}>返回聊天</Button></DialogActions>
+  </Dialog>;
+}
+const VisualAnswerDialog = lazy(() => import("./VisualAnswerDialog")
+  .catch(() => ({ default: UnavailableVisualAnswer })));
 
 type HelpDoc = {
   slug: string;
@@ -109,6 +120,10 @@ function App() {
   const [chatOpen, setChatOpen] = useState(false);
   const chat = useAgentChat();
   const { messages, submitting } = chat;
+  const [visualMessage, setVisualMessage] = useState<string | null>(null);
+  const visualIndex = messages.findIndex(message => message.id === visualMessage);
+  const selectedVisual = visualIndex >= 0 ? messages[visualIndex] : undefined;
+  useEffect(() => setVisualMessage(null), [chat.userId, chat.sessionId]);
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -149,6 +164,7 @@ function App() {
 
   const closeChat = () => {
     chat.cancel();
+    setVisualMessage(null);
     setChatOpen(false);
   };
 
@@ -398,6 +414,10 @@ function App() {
                     <Typography sx={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.55 }}>{message.content}</Typography>
                   )}
                 </Paper>
+                {message.role === "assistant" && canVisualize(message.content, message.pending) && (
+                  <Button size="small" startIcon={<AutoAwesomeRoundedIcon />} onClick={() => setVisualMessage(message.id)}
+                    sx={{ mt: 0.75, fontSize: 11, color: colors.greenDark }}>查看可视化</Button>
+                )}
                 {!!message.sources?.length && (
                   <Box sx={{ width: "91%", mt: 1.25, display: "flex", flexWrap: "wrap", gap: 0.75 }}>
                     <Typography sx={{ width: "100%", color: "#8a938c", fontSize: 9, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase" }}>
@@ -450,6 +470,14 @@ function App() {
           </Typography>
         </Paper>
       )}
+      {selectedVisual && <Suspense fallback={<Dialog open onClose={() => setVisualMessage(null)} fullWidth maxWidth="sm">
+        <DialogTitle>正在加载可视化回答…</DialogTitle>
+        <DialogContent><CircularProgress size={24} /></DialogContent>
+        <DialogActions><Button onClick={() => setVisualMessage(null)}>返回聊天</Button></DialogActions>
+      </Dialog>}>
+        <VisualAnswerDialog message={selectedVisual} question={messages[visualIndex - 1]?.role === "user" ? messages[visualIndex - 1].content : "回答概览"}
+          onClose={() => setVisualMessage(null)} />
+      </Suspense>}
       <Dialog open={chat.memoryOpen} onClose={() => !chat.memoryBusy && chat.setMemoryOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Saved memory · {chat.users.find(user => user.id === chat.userId)?.username}</DialogTitle>
         <DialogContent>

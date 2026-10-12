@@ -6,17 +6,18 @@
   "type": "module",
   "scripts": {
     "maven": "node scripts/run-maven.mjs",
-    "dev": "pnpm build:server && concurrently --kill-others --names JAVA,WEB \"java -jar target/ragbot.jar --server.port=3001\" \"vite\"",
+    "dev": "pnpm build:visualization && pnpm build:server && concurrently --kill-others --names JAVA,WEB \"java -jar target/ragbot.jar --server.port=3001\" \"vite\"",
     "build:index": "pnpm build:server && java -jar target/ragbot.jar --spring.main.web-application-type=none --rag.build-index=true",
     "build:server": "node scripts/run-maven.mjs --batch-mode package",
-    "build": "vite build && pnpm build:server",
+    "build:visualization": "node scripts/build-visualization.mjs",
+    "build": "pnpm build:visualization && vite build && pnpm build:server",
     "build:all": "pnpm run build:index && pnpm run build",
     "server": "pnpm build:server && java -jar target/ragbot.jar",
     "server:dev": "pnpm build:server && java -jar target/ragbot.jar --server.port=3001",
     "start": "java -jar target/ragbot.jar",
     "test:server": "node scripts/run-maven.mjs --batch-mode test",
-    "test:ui": "node --test tests/agentActivity.test.mjs",
-    "typecheck": "tsc -p tsconfig.json"
+    "test:ui": "pnpm build:visualization && node --test tests/*.test.mjs",
+    "typecheck": "pnpm build:visualization && tsc -p tsconfig.json"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -29,10 +30,13 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@dagrejs/dagre": "3.1.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.0",
     "concurrently": "^9.2.1",
+    "esbuild": "0.28.2",
+    "temml": "0.14.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
   }
