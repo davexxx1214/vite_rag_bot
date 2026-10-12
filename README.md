@@ -47,6 +47,7 @@ pnpm build           # Build frontend and Java service
 
 ## Project layout
 
+- `SOUL.md`: editable SSBot identity, style and financial business instructions.
 - `docs/`: local Markdown knowledge base.
 - `data/rag-index.json`: generated local vector index.
 - `src/main/java/`: Spring Boot API, agent loop, tools, file memory, RAG retrieval, OpenAI client and index builder.
@@ -128,6 +129,19 @@ Append entries to the existing list to keep the default tools. Parameters suppor
 required strings with valid resource IDs. A `query` field maps a parameter to a query-string key.
 The server validates argument types, injects username and bounds tool output as before. Absolute
 URLs, identity overrides, undefined placeholders, duplicate names and non-GET methods fail startup.
+
+### Editing SSBot's instructions
+
+Edit the root `SOUL.md` to change SSBot's identity, reply style or business instructions.
+The backend reads the UTF-8 file before each agent model request, so edits take effect on
+subsequent requests without rebuilding or restarting. User identity and per-user `USER.md` /
+`MEMORY.md` context are appended separately.
+
+The default is `optional:file:./SOUL.md`, relative to the server's working directory. When
+absent, the JAR uses its bundled copy. Set `agent.soul-config` (or `AGENT_SOUL_CONFIG`) to
+an explicit `file:` or `classpath:` resource to choose another file. A missing explicit
+resource or an empty file fails startup; invalid edits also fail the affected request.
+The file is server configuration shared by all users; edit it on the server filesystem.
 
 ### File memory
 

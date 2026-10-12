@@ -30,6 +30,7 @@ agent:
   # Leave unset to call this Spring Boot server's actual HTTP port.
   finance-base-url: ${FINANCE_API_BASE_URL:}
   tools-config: ${AGENT_TOOLS_CONFIG:optional:file:./tools.yaml}
+  soul-config: ${AGENT_SOUL_CONFIG:optional:file:./SOUL.md}
   input-budget-tokens: 64000
   compact-at-tokens: 48000
   compact-target-tokens: 32000

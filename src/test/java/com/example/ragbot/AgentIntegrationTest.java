@@ -61,6 +61,7 @@ final class AgentIntegrationTest {
     registry.add("rag.openai-base-url", () -> "http://127.0.0.1:" + MODEL.getAddress().getPort() + "/v1");
     registry.add("rag.index-path", () -> ROOT.resolve("index.json").toString());
     registry.add("agent.memory-directory", () -> ROOT.resolve("memory").toString());
+    registry.add("agent.soul-config", () -> "optional:" + ROOT.resolve("SOUL.md").toUri());
     registry.add("agent.finance-base-url", () -> "");
   }
 
@@ -70,6 +71,7 @@ final class AgentIntegrationTest {
     REPLIES.clear();
     stalled = null;
     release = null;
+    Files.writeString(ROOT.resolve("SOUL.md"), new SoulInstructions("classpath:SOUL.md").read());
     store.memory("user-001", "");
     store.memory("user-002", "");
     store.skipOldMemoryCandidates("user-001");
@@ -79,6 +81,25 @@ final class AgentIntegrationTest {
   @AfterAll
   static void stopModel() {
     MODEL.stop(0);
+  }
+
+  @Test
+  void editableSoulReachesModelRequestsAlongsideUserIdentityAndMemory() throws Exception {
+    String session = session("user-001");
+    store.memory("user-001", "## language\n用户明确偏好中文回答。\n");
+    answer("你好，我是 SSBot。");
+    assertThat(types(chat("user-001", session, "你是谁？"))).contains("done").doesNotContain("error");
+    String instructions = REQUESTS.getFirst().path("instructions").asString();
+    assertThat(instructions).contains("SSBot", "金融业务助手", "如无必要，勿增实体。",
+        "回复要简洁、自然、温暖。", "要有自己的判断，不要做只会附和的应声虫。",
+        "search_docs", "compare_portfolios", "Current user: alice (user-001)",
+        "USER.md", "MEMORY.md", "用户明确偏好中文回答");
+    Files.writeString(ROOT.resolve("SOUL.md"), instructions.substring(0, instructions.indexOf("\nCurrent user:"))
+        + "\nLive edit: include a brief greeting.\n");
+    answer("你好。");
+    assertThat(types(chat("user-001", session, "继续"))).contains("done").doesNotContain("error");
+    assertThat(REQUESTS.get(1).path("instructions").asString())
+        .contains("Live edit: include a brief greeting.", "Current user: alice", "用户明确偏好中文回答");
   }
 
   @Test

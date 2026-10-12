@@ -66,7 +66,8 @@ class AgentDeadlineTest {
           mock(RagChatService.class), new BusinessTools("classpath:tools.yaml"));
       tools.register("round_lookup", "Known result", Map.of(), (args, scope) ->
           new ToolRegistry.Result(mapper.valueToTree(Map.of("id", "pf-round")), List.of()));
-      var agent = new AgentService(props, AgentTestSupport.rag(), store, context, tools, model, mapper);
+      var agent = new AgentService(props, AgentTestSupport.rag(), store, context, tools, model, mapper,
+          new SoulInstructions("classpath:SOUL.md"));
       String session = store.createSession("user-001");
       List<Map<String, Object>> events = new ArrayList<>();
       try { agent.run("user-001", session, "Compare data", events::add); }
@@ -98,7 +99,8 @@ class AgentDeadlineTest {
           mock(RagChatService.class), new BusinessTools("classpath:tools.yaml"));
       tools.register("disconnect_lookup", "Known result", Map.of(), (args, scope) -> new ToolRegistry.Result(
           mapper.valueToTree(Map.of("id", "pf-disconnect")), List.of(new RagSource("B1", "Test", "Test", "/test", 1))));
-      var agent = new AgentService(props, AgentTestSupport.rag(), store, context, tools, model, mapper);
+      var agent = new AgentService(props, AgentTestSupport.rag(), store, context, tools, model, mapper,
+          new SoulInstructions("classpath:SOUL.md"));
       String session = store.createSession("user-001");
       try {
         assertThatThrownBy(() -> agent.run("user-001", session, "Query", event -> {
@@ -147,7 +149,8 @@ class AgentDeadlineTest {
           mock(RagChatService.class), new BusinessTools("classpath:tools.yaml"));
       tools.register("deadline_lookup", "Known result", Map.of(), (args, scope) ->
           new ToolRegistry.Result(mapper.valueToTree(Map.of("id", "pf-deadline", "mock", true)), List.of()));
-      var agent = new AgentService(props, AgentTestSupport.rag(), store, context, tools, model, mapper);
+      var agent = new AgentService(props, AgentTestSupport.rag(), store, context, tools, model, mapper,
+          new SoulInstructions("classpath:SOUL.md"));
       String session = store.createSession("user-001");
       List<Map<String, Object>> events = new ArrayList<>();
       long started = System.nanoTime();
