@@ -16,7 +16,8 @@
     "server:dev": "pnpm build:server && java -jar target/ragbot.jar --server.port=3001",
     "start": "java -jar target/ragbot.jar",
     "test:server": "node scripts/run-maven.mjs --batch-mode test",
-    "test:ui": "pnpm build:visualization && node --test tests/*.test.mjs",
+    "test:ui": "pnpm build:visualization && node --experimental-strip-types --test tests/*.test.mjs",
+    "test:caret-perf": "node scripts/caret-typing-perf.mjs",
     "typecheck": "pnpm build:visualization && tsc -p tsconfig.json"
   },
   "dependencies": {
@@ -36,6 +37,7 @@
     "@vitejs/plugin-react": "^6.1.0",
     "concurrently": "^9.2.1",
     "esbuild": "0.28.2",
+    "puppeteer-core": "^24.36.1",
     "temml": "0.14.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
