@@ -39,6 +39,7 @@ import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import "./style.css";
 import { useAgentChat } from "./useAgentChat";
 import { AgentActivityPanel } from "./AgentActivityPanel";
+import { UserInputCard } from "./UserInputCard";
 import { canVisualize } from "./visualAnswer";
 
 function UnavailableVisualAnswer({ onClose }: { onClose: () => void }) {
@@ -155,7 +156,7 @@ function App() {
 
   useEffect(() => {
     if (chatOpen) messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [chatOpen, messages]);
+  }, [chatOpen, messages, chat.inputRequest]);
 
   const openChat = () => {
     setChatOpen(true);
@@ -347,7 +348,7 @@ function App() {
               <Typography sx={{ fontSize: 15, fontWeight: 800 }}>Finance Assistant</Typography>
               <Box sx={{ mt: 0.25, display: "flex", alignItems: "center", gap: 0.75, color: "text.secondary" }}>
                 <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: "#23a66b", boxShadow: "0 0 0 3px #ddf4e8" }} />
-                <Typography sx={{ fontSize: 10 }}>Help docs, portfolio data & saved preferences</Typography>
+                <Typography sx={{ fontSize: 10 }}>Help docs, portfolio queries & edits</Typography>
               </Box>
             </Box>
             <Tooltip title="Close">
@@ -443,6 +444,8 @@ function App() {
                 )}
               </Box>
             ))}
+            {chat.inputRequest && <UserInputCard key={chat.inputRequest.requestId} request={chat.inputRequest}
+              busy={submitting || chat.loading} onAnswer={chat.answerInput} />}
             <div ref={messagesEndRef} />
           </Box>
 
@@ -452,7 +455,7 @@ function App() {
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={handleInputKeyDown}
-              placeholder="Ask about your portfolios, issuers or the help docs…"
+              placeholder="查询组合，或试试：把 pf-001 改名为退休计划…"
               multiline
               maxRows={4}
               fullWidth

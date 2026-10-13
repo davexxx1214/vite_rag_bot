@@ -11,8 +11,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class ApiExceptionHandler {
   @ExceptionHandler(ApiRequestException.class)
-  public ResponseEntity<Map<String, String>> requestError(ApiRequestException error) {
-    return ResponseEntity.status(error.status()).body(Map.of("error", error.getMessage()));
+  public ResponseEntity<Map<String, Object>> requestError(ApiRequestException error) {
+    return ResponseEntity.status(error.status()).body(error.body());
   }
 
   @ExceptionHandler(HttpMessageNotReadableException.class)

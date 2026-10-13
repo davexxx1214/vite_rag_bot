@@ -5,10 +5,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Function;
+import java.util.Map;
+import java.util.HashMap;
+import java.time.Instant;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
-/** Deterministic, read-only fixtures. No market data or external API calls. */
+/** Fictional fixtures with atomic, versioned portfolio name edits. Resets on restart. */
 @Service
 public final class MockFinanceService {
   private static final String AS_OF = "2026-10-09T16:00:00Z";
@@ -31,7 +34,9 @@ public final class MockFinanceService {
       position("pos-004", "pf-003", "iss-001", "NOVA", "EQUITY", "USD", "5", "110", "120"),
       position("pos-005", "pf-003", "iss-004", "ATLAS-2030", "BOND", "USD", "10", "100", "101")
   );
-  private final List<Portfolio> portfolios = portfolioFixtures();
+  private volatile List<Portfolio> portfolios = portfolioFixtures();
+  private final Map<String, Operation> operations = new HashMap<>();
+  private record Operation(String portfolioId, String name, long version, Map<String, Object> receipt) {}
   private final List<Account> accounts = List.of(
       account("acc-001", "pf-001", "CASH"),
       account("acc-002", "pf-002", "CASH"),
@@ -71,6 +76,54 @@ public final class MockFinanceService {
 
   public Portfolio portfolio(String id, String username) {
     return requireOne(portfolios(id, username), "Portfolio");
+  }
+
+  public record PortfolioEdit(String name, Long expectedVersion) {}
+
+  public synchronized Map<String, Object> updatePortfolio(String id, String username, String operationId, PortfolioEdit edit) {
+    String owner = normalizeUsername(username);
+    if (owner == null || operationId == null || !operationId.matches("[A-Za-z0-9_-]{1,100}"))
+      throw editError(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "identity", "username and a valid Idempotency-Key are required", Map.of());
+    Portfolio current = portfolio(id, owner);
+    if (edit == null || edit.name() == null || edit.expectedVersion() == null || edit.expectedVersion() < 1)
+      throw editError(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "name", "name and expectedVersion are required", Map.of());
+    String name = edit.name().strip();
+    if (name.isEmpty() || name.codePointCount(0, name.length()) > 80 || name.codePoints().anyMatch(Character::isISOControl))
+      throw editError(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "name", "Name must contain 1-80 characters without control characters", Map.of("maxLength", 80));
+    String key = owner + ":" + operationId;
+    Operation previous = operations.get(key);
+    if (previous != null) {
+      if (!previous.portfolioId().equals(id) || !previous.name().equals(name) || previous.version() != edit.expectedVersion())
+        throw editError(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT", "operationId", "Operation ID was used for a different request", Map.of());
+      return previous.receipt();
+    }
+    if (current.version() != edit.expectedVersion())
+      throw editError(HttpStatus.CONFLICT, "VERSION_CONFLICT", "version", "Portfolio changed since it was read", Map.of("current", current));
+    for (Portfolio other : portfolios) {
+      if (other.username().equals(owner) && !other.id().equals(id) && other.name().strip().equalsIgnoreCase(name))
+        throw editError(HttpStatus.CONFLICT, "DUPLICATE_VALUE", "name", "Portfolio name is already in use", Map.of("conflictingId", other.id()));
+    }
+    boolean unchanged = current.name().equals(name);
+    Portfolio updated = unchanged ? current : new Portfolio(current.id(), current.username(), name, current.currency(),
+        current.cashBalance(), current.marketValue(), current.totalValue(), current.unrealizedPnl(), current.positionCount(),
+        current.asOf(), current.version() + 1, Instant.now().toString());
+    Map<String, Object> receipt = Map.of("operationId", operationId, "status", unchanged ? "no_change" : "applied",
+        "portfolio", updated, "changes", unchanged ? Map.of() : Map.of("name", Map.of("before", current.name(), "after", name)), "mock", true);
+    if (!unchanged) portfolios = portfolios.stream().map(row -> row.id().equals(id) ? updated : row).toList();
+    operations.put(key, new Operation(id, name, edit.expectedVersion(), receipt));
+    return receipt;
+  }
+
+  public synchronized Map<String, Object> operation(String id, String username) {
+    String owner = normalizeUsername(username);
+    if (owner == null) throw new ApiRequestException(HttpStatus.BAD_REQUEST, "username is required");
+    Operation operation = operations.get(owner + ":" + id);
+    // Unknown operations are explicitly safe to replay with the same key in this mock.
+    return operation == null ? Map.of("operationId", id, "status", "not_found", "mock", true) : operation.receipt();
+  }
+
+  private static ApiRequestException editError(HttpStatus status, String code, String field, String message, Map<String, Object> details) {
+    return new ApiRequestException(status, message, Map.of("code", code, "field", field, "retryable", false, "details", details));
   }
 
   public List<Issuer> issuers(String id, String username) {
@@ -146,7 +199,7 @@ public final class MockFinanceService {
     BigDecimal pnl = holdings.stream().map(Position::unrealizedPnl).reduce(BigDecimal.ZERO, BigDecimal::add);
     BigDecimal cashBalance = new BigDecimal(cash);
     return new Portfolio(id, username, name, currency, cashBalance, marketValue,
-        cashBalance.add(marketValue), pnl, holdings.size(), AS_OF);
+        cashBalance.add(marketValue), pnl, holdings.size(), AS_OF, 1, AS_OF);
   }
 
   private Account account(String id, String portfolioId, String type) {
@@ -180,8 +233,14 @@ public final class MockFinanceService {
 
   public record Portfolio(
       String id, String username, String name, String currency, BigDecimal cashBalance,
-      BigDecimal marketValue, BigDecimal totalValue, BigDecimal unrealizedPnl, int positionCount, String asOf
-  ) {}
+      BigDecimal marketValue, BigDecimal totalValue, BigDecimal unrealizedPnl, int positionCount, String asOf,
+      long version, String updatedAt
+  ) {
+    public Portfolio(String id, String username, String name, String currency, BigDecimal cashBalance,
+        BigDecimal marketValue, BigDecimal totalValue, BigDecimal unrealizedPnl, int positionCount, String asOf) {
+      this(id, username, name, currency, cashBalance, marketValue, totalValue, unrealizedPnl, positionCount, asOf, 1, asOf);
+    }
+  }
 
   public record Issuer(String id, String name, String country, String sector, String symbol) {}
 

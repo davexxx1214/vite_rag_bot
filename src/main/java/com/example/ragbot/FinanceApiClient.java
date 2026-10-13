@@ -99,6 +99,23 @@ public final class FinanceApiClient {
     HttpRequest request = HttpRequest.newBuilder(uri(path, query, user))
         .timeout(Duration.ofSeconds(Math.min(10, Math.max(1, control.timeout().toSeconds()))))
         .header("Accept", "application/json").GET().build();
+    return receive(request, control, maxBytes);
+  }
+
+  public JsonNode updatePortfolio(String id, String name, long version, String operationId,
+      MockFinanceService.User user, RunControl control) throws IOException, InterruptedException {
+    control.check();
+    HttpRequest request = HttpRequest.newBuilder(uri("/portfolios/" + segment(id), user))
+        .timeout(Duration.ofSeconds(Math.min(10, Math.max(1, control.timeout().toSeconds()))))
+        .header("Accept", "application/json").header("Content-Type", "application/json")
+        .header("Idempotency-Key", operationId)
+        .method("PATCH", HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(
+            Map.of("name", name, "expectedVersion", version)))).build();
+    return receive(request, control, 131_072);
+  }
+
+  private JsonNode receive(HttpRequest request, RunControl control, int maxBytes)
+      throws IOException, InterruptedException {
     HttpResponse<InputStream> response = control.send(http, request);
     try (InputStream body = response.body()) {
       try {
@@ -114,8 +131,11 @@ public final class FinanceApiClient {
           throw new IOException("Finance API returned incomplete or invalid JSON", error);
         }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
+          Map<String, Object> details = new LinkedHashMap<>();
+          for (String field : List.of("code", "field", "retryable", "details"))
+            if (result.hasNonNull(field)) details.put(field, mapper.convertValue(result.path(field), Object.class));
           throw new ApiRequestException(HttpStatus.valueOf(response.statusCode()),
-              result.path("error").asString("Finance query failed"));
+              result.path("error").asString("Finance request failed"), details);
         }
         return result;
       } finally {

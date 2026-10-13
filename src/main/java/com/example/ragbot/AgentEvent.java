@@ -12,6 +12,7 @@ public sealed interface AgentEvent {
   record ToolStart(String callId, String name, String arguments) implements AgentEvent {}
   record ToolEnd(String callId, String name, boolean ok, long elapsedMs) implements AgentEvent {}
   record Sources(List<RagSource> sources) implements AgentEvent {}
+  record UserInputRequired(tools.jackson.databind.JsonNode inputRequest) implements AgentEvent {}
   record ContextCompacted() implements AgentEvent {}
   record Done(boolean partial, String reason, int toolCalls) implements AgentEvent {}
 }

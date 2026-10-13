@@ -30,7 +30,7 @@ public class ChatRequestSizeFilter extends OncePerRequestFilter {
       HttpServletResponse response,
       FilterChain filterChain
   ) throws ServletException, IOException {
-    if (request.getRequestURI().equals("/api/chat")
+    if ((request.getRequestURI().equals("/api/chat") || request.getRequestURI().matches("/api/agent/sessions/[^/]+/input-requests/[^/]+/answers"))
         && request.getContentLengthLong() > MAX_REQUEST_BYTES) {
       response.setStatus(HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
       response.setContentType(MediaType.APPLICATION_JSON_VALUE);

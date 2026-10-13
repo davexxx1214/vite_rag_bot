@@ -68,6 +68,7 @@ public class AgentController {
     Map<String, Object> result = new java.util.LinkedHashMap<>();
     result.put("id", id); result.put("messages", messages); result.put("summary", store.sessionSummary(userId, id));
     result.put("offset", page.offset()); result.put("nextOffset", page.nextOffset()); result.put("total", page.total());
+    result.put("inputRequest", agent.inputRequest(userId, id));
     return result;
   }
 

@@ -16,6 +16,7 @@ final class AgentRun {
   int toolCalls;
   boolean finalRequested;
   String stopReason = "";
+  JsonNode inputRequest;
 
   record Answer(String text, boolean completed) {}
 }

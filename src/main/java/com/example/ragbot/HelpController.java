@@ -17,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -86,9 +87,27 @@ public class HelpController {
   }
 
   private void streamChat(OutputStream output, HttpServletResponse response, String userId, String sessionId, String message) {
+    streamChat(output, response, userId, sessionId, message, null);
+  }
+
+  @PostMapping(value = "/agent/sessions/{sessionId}/input-requests/{requestId}/answers", produces = MediaType.APPLICATION_NDJSON_VALUE)
+  public ResponseEntity<StreamingResponseBody> answer(@RequestHeader("X-Mock-User-Id") String userId,
+      @PathVariable String sessionId, @PathVariable String requestId, @RequestBody InputRequestAnswer answer,
+      HttpServletResponse response) throws IOException {
+    store.requireExistingSession(userId, sessionId);
+    boolean cancelled = Boolean.TRUE.equals(answer.cancelled());
+    var input = new EditingWorkflow.InputAnswer(requestId, answer.optionId(), answer.text(), cancelled);
+    String message = cancelled ? "取消本次修改" : answer.text() != null ? answer.text() : "选择：" + answer.optionId();
+    StreamingResponseBody stream = output -> streamChat(output, response, userId, sessionId, message, input);
+    return ResponseEntity.ok().header("Cache-Control", "no-store").header("X-Accel-Buffering", "no")
+        .header("X-Content-Type-Options", "nosniff").body(stream);
+  }
+
+  private void streamChat(OutputStream output, HttpServletResponse response, String userId, String sessionId, String message,
+      EditingWorkflow.InputAnswer inputAnswer) {
     long startedAt = System.currentTimeMillis();
     try {
-      agent.run(userId, sessionId, message, event -> write(output, response, event));
+      agent.run(userId, sessionId, message, inputAnswer, event -> write(output, response, event));
       LOGGER.info("Agent request completed in {}ms", System.currentTimeMillis() - startedAt);
     } catch (Exception error) {
       String publicMessage = failureMessage(error);
@@ -123,4 +142,5 @@ public class HelpController {
   }
 
   public record ChatRequest(String sessionId, String message) {}
+  public record InputRequestAnswer(String optionId, String text, Boolean cancelled) {}
 }

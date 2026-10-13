@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyActivityEvent, finishActivities } from "./agentActivity";
 import type { Activity, ActivityEvent } from "./agentActivity";
+import type { InputAnswer, InputRequest } from "./inputRequest";
 
 export type Source = {
   citation: string;
@@ -25,7 +26,7 @@ export type ChatMessage = {
 
 type User = { id: string; username: string; displayName: string };
 type Session = { id: string; title: string; updatedAt: string };
-type SessionPage = { messages: ChatMessage[]; offset: number; nextOffset: number | null; total: number };
+type SessionPage = { messages: ChatMessage[]; offset: number; nextOffset: number | null; total: number; inputRequest?: InputRequest | null };
 type CoreMemory = { content: string; user: string; notes: string; estimatedTokens: number; budgetTokens: number };
 type Storage = { bytes: number; quotaBytes: number; overQuota: boolean };
 type StreamEvent =
@@ -34,6 +35,7 @@ type StreamEvent =
   | { type: "sources"; sources: Source[] }
   | { type: "delta"; text: string }
   | { type: "answer_reset" }
+  | { type: "user_input_required"; inputRequest: InputRequest }
   | { type: "error"; error: string }
   | { type: "done"; partial?: boolean; reason?: string; toolCalls?: number };
 
@@ -41,7 +43,7 @@ const sessionKey = (userId: string) => `ragbot.session.${userId}`;
 const id = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const welcome = (): ChatMessage[] => [{
   id: id(), role: "assistant",
-  content: "Hi! I can search the help documents, query your portfolios and issuers, and remember your preferences. Try **Compare my portfolios**, or **Remember that I prefer answers in Chinese**.",
+  content: "Hi! I can search help documents, query portfolios and issuers, rename your portfolios, and remember your preferences. Try **把 pf-001 改名为退休计划**, **Compare my portfolios**, or **Remember that I prefer answers in Chinese**.",
 }];
 
 function stored(key: string) {
@@ -74,6 +76,7 @@ export function useAgentChat() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [inputRequest, setInputRequest] = useState<InputRequest | null>(null);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memoryDraft, setMemoryDraft] = useState("");
   const [memoryNotes, setMemoryNotes] = useState("");
@@ -112,6 +115,7 @@ export function useAgentChat() {
     setSessions([]);
     setStorage(null);
     setMessages(welcome());
+    setInputRequest(null);
     setMemoryOpen(false);
     persist("ragbot.user", userId);
     void (async () => {
@@ -128,6 +132,7 @@ export function useAgentChat() {
       setSessionId(selected);
       setSessions(loaded);
       setMessages(session.messages.length ? session.messages : welcome());
+      setInputRequest(session.inputRequest ?? null);
       setHistoryOffset(session.offset);
       setStorage(usage);
       persist(sessionKey(userId), selected);
@@ -163,6 +168,7 @@ export function useAgentChat() {
       setSessionId(chosen);
       setSessions(loaded);
       setMessages(session.messages.length ? session.messages : welcome());
+      setInputRequest(session.inputRequest ?? null);
       setHistoryOffset(session.offset);
       persist(sessionKey(userId), chosen);
     } catch (cause) {
@@ -213,8 +219,8 @@ export function useAgentChat() {
     setMessages(current => current.map(message => message.id === messageId ? { ...message, ...patch } : message));
   };
 
-  const send = async (content: string) => {
-    if (submitting || loading || !sessionId || !content.trim()) return;
+  const send = async (content: string, inputAnswer?: InputAnswer) => {
+    if (active.current || submitting || loading || !sessionId || !content.trim() || (inputAnswer && !inputRequest)) return;
     const replyId = id();
     const startedAt = Date.now();
     setMessages(current => [...current, { id: id(), role: "user", content },
@@ -223,6 +229,7 @@ export function useAgentChat() {
     setError("");
     const controller = new AbortController();
     const run = { controller, userId, sessionId };
+    const runNavigation = navigation.current;
     active.current = run;
     let timedOut = false;
     // Give the server's 240-second agent deadline time to deliver a terminal event.
@@ -232,9 +239,11 @@ export function useAgentChat() {
     let partial = false;
     let activities: Activity[] = [];
     try {
-      const response = await fetch("/api/chat", {
+      const requestPath = inputAnswer && inputRequest
+        ? `/api/agent/sessions/${sessionId}/input-requests/${inputRequest.requestId}/answers` : "/api/chat";
+      const response = await fetch(requestPath, {
         method: "POST", headers: { "Content-Type": "application/json", "X-Mock-User-Id": userId },
-        body: JSON.stringify({ sessionId, message: content }), signal: controller.signal,
+        body: JSON.stringify(inputAnswer ?? { sessionId, message: content }), signal: controller.signal,
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null) as { error?: string } | null;
@@ -255,6 +264,7 @@ export function useAgentChat() {
             break;
           case "sources": update(replyId, { sources: event.sources }); break;
           case "answer_reset": answer = ""; update(replyId, { content: "" }); break;
+          case "user_input_required": setInputRequest(event.inputRequest); update(replyId, { status: "等待你的选择" }); break;
           case "delta": answer += event.text; update(replyId, { content: answer }); break;
           case "error": throw new Error(event.error);
           case "done": partial = !!event.partial; complete = true; break;
@@ -290,6 +300,10 @@ export function useAgentChat() {
       window.clearTimeout(timeout);
       if (active.current === run) active.current = null;
       setSubmitting(false);
+      // Reload even after a disconnected response: the edit/question may already have been committed.
+      void api<SessionPage>(`/sessions/${sessionId}`, userId).then(page => {
+        if (active.current === null && navigation.current === runNavigation) setInputRequest(page.inputRequest ?? null);
+      }).catch(() => undefined);
     }
   };
 
@@ -322,6 +336,7 @@ export function useAgentChat() {
   };
 
   return { users, userId, setUserId, sessions, sessionId, selectSession, messages, loading,
+    inputRequest, answerInput: (answer: InputAnswer, display: string) => send(display, answer),
     submitting, error, send, cancel, memoryOpen, setMemoryOpen, memoryDraft, setMemoryDraft,
     memoryBusy, memoryError, openMemory, saveMemory, memoryNotes, setMemoryNotes, memoryBudget,
     historyOffset, historyBusy, loadEarlier, loadMoreSessions, exportSession, deleteSession, storage };

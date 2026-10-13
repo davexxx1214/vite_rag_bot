@@ -49,6 +49,11 @@ public final class AgentService {
 
   public void run(String userId, String sessionId, String message, EventSink eventSink)
       throws IOException, InterruptedException {
+    run(userId, sessionId, message, null, eventSink);
+  }
+
+  public void run(String userId, String sessionId, String message, EditingWorkflow.InputAnswer inputAnswer, EventSink eventSink)
+      throws IOException, InterruptedException {
     MockFinanceService.User user = store.user(userId);
     store.requireExistingSession(userId, sessionId);
     ReentrantLock lock = acquire(userId);
@@ -59,21 +64,52 @@ public final class AgentService {
     var workTimer = deadlines.schedule(control::finishWork,
         properties.requestTimeoutSeconds() - properties.finalAnswerReserveSeconds(), TimeUnit.SECONDS);
     Runnable enterFinal = () -> workTimer.cancel(false);
+    boolean[] released = {false};
+    Runnable releaseRun = () -> {
+      if (released[0]) return;
+      timer.cancel(false); workTimer.cancel(false);
+      active.remove(userId, activeRun); lock.unlock(); released[0] = true;
+    };
     var listener = new NdjsonAgentListener(eventSink, tools, mapper);
     var progress = new AgentProgress(listener);
     var state = new AgentRun();
     var history = new AgentHistoryRecorder(store, userId, sessionId, message, rag.chatModel(), state);
     var input = new AgentContext(properties, store, context, tools, soul, user, sessionId, progress);
     try {
+      String workMessage = message;
+      EditingWorkflow.Resume resume = null;
+      if (inputAnswer != null) tools.editing().validateAnswer(new AgentTool.Scope(user, sessionId, 0, control), inputAnswer);
+      else tools.editing().start(userId, sessionId, message);
       long started = progress.start("memory-load", "正在读取用户记忆与会话历史…", "");
       history.begin();
+      if (inputAnswer != null) resume = tools.editing().answer(new AgentTool.Scope(user, sessionId, 0, control), inputAnswer);
+      if (resume != null) {
+        workMessage = resume.message();
+        if (resume.result() != null) {
+          var result = resume.result();
+          state.successfulResults.add(result);
+          state.transcript.add(mapper.valueToTree(Map.of("role", "assistant", "content", "Edit workflow result: " + result)));
+          if (result.path("status").asString().equals("waiting_for_user")) {
+            state.inputRequest = result.path("inputRequest"); state.stopReason = "waiting_for_user";
+            progress.emit(new AgentEvent.UserInputRequired(state.inputRequest));
+          }
+          String text = editAnswer(result);
+          progress.emit(new AgentEvent.Delta(text));
+          history.save(new AgentRun.Answer(text, !result.has("error")));
+          progress.end("memory-load", started, true);
+          releaseRun.run();
+          progress.emit(new AgentEvent.Done(result.has("error"), state.stopReason, state.toolCalls));
+          return;
+        }
+      }
       input.load(control);
       progress.end("memory-load", started, true);
       var answer = new AgentLoop(properties, rag, model, tools, mapper)
-          .run(message, user, sessionId, input, state, progress, control, enterFinal);
+          .run(workMessage, user, sessionId, input, state, progress, control, enterFinal);
       history.save(answer);
-      input.afterAnswer(answer.completed(), control);
-      progress.emit(new AgentEvent.Done(!answer.completed(), state.stopReason, state.toolCalls));
+      if (state.inputRequest == null) input.afterAnswer(answer.completed(), control);
+      releaseRun.run();
+      progress.emit(new AgentEvent.Done(!answer.completed() && state.inputRequest == null, state.stopReason, state.toolCalls));
     } catch (IOException | InterruptedException | RuntimeException error) {
       Thread.interrupted();
       if (!history.stored() && history.started() && !state.successfulResults.isEmpty()
@@ -86,6 +122,7 @@ public final class AgentService {
           history.save(answer);
           progress.emit(new AgentEvent.AnswerReset());
           progress.emit(new AgentEvent.Delta(answer.text()));
+          releaseRun.run();
           progress.emit(new AgentEvent.Done(true, reason, state.toolCalls));
           return;
         }
@@ -93,10 +130,7 @@ public final class AgentService {
       history.failed(error);
       throw error;
     } finally {
-      timer.cancel(false);
-      workTimer.cancel(false);
-      active.remove(userId, activeRun);
-      lock.unlock();
+      releaseRun.run();
       Thread.interrupted();
     }
   }
@@ -107,6 +141,23 @@ public final class AgentService {
     if (run == null || !run.sessionId().equals(sessionId)) return false;
     run.control().cancel();
     return true;
+  }
+
+  tools.jackson.databind.JsonNode inputRequest(String userId, String sessionId) throws IOException {
+    return tools.editing().publicQuestion(userId, sessionId);
+  }
+
+  private static String editAnswer(tools.jackson.databind.JsonNode result) {
+    String status = result.path("status").asString();
+    if (status.equals("waiting_for_user")) return result.path("inputRequest").path("question").asString();
+    if (status.equals("cancelled")) return "已取消本次修改。";
+    if (status.equals("verification_deferred")) return "已暂停核对。此前的修改可能已经生效，取消等待不会撤销修改；可以继续请求核对结果。";
+    if (status.equals("no_change")) return "名称没有变化，无需修改。";
+    if (status.equals("applied")) return "已将 " + result.path("portfolio").path("id").asString()
+        + " 的名称从“" + result.path("changes").path("name").path("before").asString()
+        + "”改为“" + result.path("portfolio").path("name").asString() + "”（版本 "
+        + result.path("portfolio").path("version").asLong() + "）。";
+    return "修改未完成：" + result.path("error").asString("请核对修改结果。");
   }
 
   public String compact(String userId, String sessionId) throws IOException, InterruptedException {

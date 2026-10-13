@@ -28,6 +28,7 @@ public final class ToolRegistry {
   private final AgentProperties properties;
   private final MemoryStore store;
   private final PortfolioTools portfolios;
+  private final EditingWorkflow editing;
 
   public ToolRegistry(ObjectMapper mapper, AgentProperties properties, MemoryStore store,
       ContextManager context, FinanceApiClient finance, RagChatService knowledge, BusinessTools business) {
@@ -43,6 +44,18 @@ public final class ToolRegistry {
     this.store = store;
     this.portfolios = new PortfolioTools(mapper, store, finance, properties, resultSets);
     DefaultAgentTools.register(this, mapper, store, context, finance, knowledge, business, portfolios);
+    editing = new EditingWorkflow(store, mapper, finance, portfolios);
+    editing.register(this);
+  }
+
+  EditingWorkflow editing() { return editing; }
+
+  @org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent.class)
+  public void resetMockSnapshots() throws IOException {
+    // Mock edits reset on restart, so persistent current snapshots must fetch again.
+    if (properties.financeBaseUrl() == null) {
+      for (String userId : List.of("user-001", "user-002", "user-003")) portfolios.invalidate(userId);
+    }
   }
 
   String portfolioContext(MockFinanceService.User user, String sessionId) throws IOException {
@@ -106,17 +119,50 @@ public final class ToolRegistry {
       List<?> types = rawType instanceof List<?> list ? list : List.of(rawType);
       JsonNode value = arguments.path(field.getKey());
       if (!present(arguments, field.getKey()) && types.contains("null")) continue;
-      if (types.contains("integer")) {
+      if (types.contains("array")) {
+        validateStructured(value, schema, field.getKey());
+      } else if (types.contains("integer")) {
         if (!value.isIntegralNumber() || (schema.get("minimum") instanceof Number min && value.asLong() < min.longValue())
             || (schema.get("maximum") instanceof Number max && value.asLong() > max.longValue()))
           throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + field.getKey());
       } else if (types.contains("boolean")) {
         if (!value.isBoolean()) throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + field.getKey());
-      } else text(arguments, field.getKey());
+      } else {
+        String content = text(arguments, field.getKey());
+        if (schema.get("maxLength") instanceof Number max && content.length() > max.intValue())
+          throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + field.getKey());
+      }
       if (schema.get("enum") instanceof List<?> allowed && !allowed.contains(value.asString()))
         throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + field.getKey());
     }
     return tool.execute(arguments, new AgentTool.Scope(scope.user(), scope.sessionId(), 0, scope.control()));
+  }
+
+  @SuppressWarnings("unchecked")
+  private void validateStructured(JsonNode value, Map<String, Object> schema, String path) {
+    String type = schema.get("type").toString();
+    boolean valid = switch (type) {
+      case "array" -> value.isArray();
+      case "object" -> value.isObject();
+      case "string" -> value.isString();
+      default -> false;
+    };
+    if (!valid) throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + path);
+    if (type.equals("array")) {
+      if (schema.get("maxItems") instanceof Number max && value.size() > max.intValue())
+        throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Too many options");
+      for (JsonNode item : value) validateStructured(item, (Map<String, Object>) schema.get("items"), path + "[]");
+    } else if (type.equals("object")) {
+      var properties = (Map<String, Object>) schema.get("properties");
+      for (var field : value.properties()) if (!properties.containsKey(field.getKey()))
+        throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Unexpected option field");
+      for (var field : properties.entrySet()) validateStructured(value.path(field.getKey()), (Map<String, Object>) field.getValue(), path + "." + field.getKey());
+    } else {
+      String text = value.asString();
+      if ((schema.get("maxLength") instanceof Number max && text.length() > max.intValue())
+          || (schema.get("minLength") instanceof Number min && text.strip().length() < min.intValue()))
+        throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + path);
+    }
   }
 
   /** Called in model order, before truncation or payload persistence. */

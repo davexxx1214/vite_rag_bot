@@ -45,8 +45,9 @@ final class AgentToolExecutor {
         String name = node.path("name").asString("");
         String args = node.path("arguments").asString("");
         boolean admitted = roundCalls < properties.maxToolCallsPerRound() && state.toolCalls < properties.maxToolCalls();
+        if (state.inputRequest != null) admitted = false;
         if (admitted) { roundCalls++; state.toolCalls++; }
-        else state.stopReason = "tool_call_budget";
+        else if (state.inputRequest == null) state.stopReason = "tool_call_budget";
         long started = System.nanoTime();
         progress.emit(new AgentEvent.ToolStart(id, name, args));
         batch.add(new Call(id, name, args, admitted, started));
@@ -70,10 +71,18 @@ final class AgentToolExecutor {
         boolean ok = output == null;
         if (ok) {
           try {
-            var result = tools.complete(call.name(), outcome.result(),
-                new AgentTool.Scope(user, sessionId, state.sources.size(), control));
+            // Workflow receipts/questions are already bounded and journaled. A committed
+            // write must not become a failure because citation/payload postprocessing fails.
+            var result = List.of("update_portfolio", "check_edit_operation", "request_user_input").contains(call.name())
+                ? outcome.result() : tools.complete(call.name(), outcome.result(),
+                    new AgentTool.Scope(user, sessionId, state.sources.size(), control));
             output = result.output();
-            state.successfulResults.add(output);
+            if (output.has("error")) ok = false;
+            if (output.path("status").asString().equals("waiting_for_user")) {
+              state.inputRequest = output.path("inputRequest"); state.stopReason = "waiting_for_user";
+              events.add(new AgentEvent.UserInputRequired(state.inputRequest));
+            }
+            if (ok) state.successfulResults.add(output);
             String detail = ToolLabels.detail(mapper, call.name(), call.arguments());
             if (state.completedQueries.size() < 12) state.completedQueries.add(MemoryStore.excerpt(
                 call.name() + (detail.isBlank() ? "" : " (" + detail + ")"), 240));
@@ -139,7 +148,7 @@ final class AgentToolExecutor {
 
   private Outcome invoke(Call call, AgentTool.Scope scope) {
     if (!call.admitted()) return outcome(call, null, requestError(new ApiRequestException(HttpStatus.TOO_MANY_REQUESTS,
-        "Tool call budget reached; this call was not executed. Answer from existing results.")), null);
+        "Call deferred or budget exhausted; this call was not executed.")), null);
     try {
       if (call.arguments().length() > 8_000) throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Tool arguments are too large");
       return outcome(call, tools.executeRaw(call.name(), mapper.readTree(call.arguments()), scope), null, null);
@@ -158,7 +167,7 @@ final class AgentToolExecutor {
   }
 
   private JsonNode requestError(ApiRequestException error) {
-    return mapper.valueToTree(Map.of("error", error.getMessage(), "status", error.status().value()));
+    return mapper.valueToTree(error.body());
   }
   private JsonNode toolError(String name) {
     return mapper.valueToTree(Map.of("error", "Tool failed; retry a narrower or corrected query", "tool", name));

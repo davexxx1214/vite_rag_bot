@@ -138,6 +138,9 @@ embedding path continues to use `OpenAiClient` independently of the chat interfa
 | `get_positions`, `get_transactions`, `get_accounts` | Read holdings, trades and accounts |
 | `list_issuers`, `get_issuer` | Read issuers visible through that user's holdings |
 | `compare_portfolios` | Calculate monetary differences and allocation percentages in Java |
+| `update_portfolio` | Rename an owned portfolio with version checks and a durable operation receipt |
+| `check_edit_operation` | Resolve an uncertain edit using its saved operation ID before attempting another edit |
+| `request_user_input` | Present one clarification card with choices, free text and cancellation |
 | `search_history` | Rank keyword/ID matches, page results, read surrounding turns or saved payload chunks |
 | `remember`, `forget_memory` | Update a keyed, explicit durable preference |
 
@@ -459,8 +462,11 @@ check invocation matching and execution-state updates. These tests make no paid 
 
 ## Financial mock API
 
-The Java service provides read-only JSON endpoints under `/api/mock` for integration tests.
-Fixtures are fixed, entirely fictional, and make no OpenAI calls or database requests.
+The Java service provides JSON endpoints under `/api/mock` for integration tests.
+Fixtures are entirely fictional and make no OpenAI calls or database requests. Portfolio names
+can be edited in memory; other business fields remain read-only. Names and operation receipts
+reset when the Java process restarts. Persistent current portfolio snapshots refresh after edits
+and after a local mock server restart; explicit old snapshot IDs retain their historical contents.
 Prices and valuations have a fixed `asOf` timestamp (`2026-10-09T16:00:00Z`); amounts are JSON
 numbers calculated with `BigDecimal`. They are not live market data. These endpoints are
 available through the Vite proxy and in the production JAR.
@@ -517,3 +523,51 @@ fees, bond accrued interest and FX conversion are not modeled.
 Fixtures and calculations live in `MockFinanceService.java`; routes live in
 `MockFinanceController.java`. Run `pnpm test:server` to verify filtering, error responses,
 empty portfolios and financial consistency without making external requests.
+
+### Portfolio editing and correction cards
+
+Try `把 pf-001 改名为退休计划` as Alice. To exercise a duplicate, request
+`把 pf-001 改名为 Hong Kong Income` while pf-002 still has that name. The agent reads the
+portfolio version and calls the serial `update_portfolio` tool. The backend atomically checks
+ownership, version and uniqueness before changing the name. Amounts and valuation `asOf` remain
+unchanged; `version` and `updatedAt` track name edits. A name must contain 1–80 characters without
+control characters. Within one user, stripped names are unique ignoring case; other users may
+use the same name. Submitting an unchanged name returns `no_change` without increasing its version.
+
+`PATCH /api/mock/portfolios/{id}?username=alice` accepts exactly
+`{"name":"退休计划","expectedVersion":1}` and requires an `Idempotency-Key` header. Successful
+responses contain `operationId`, `status` (`applied` or `no_change`), `portfolio` and a `changes`
+map of before/after values. Replaying the same key and request returns its original receipt;
+using that key with different arguments returns `IDEMPOTENCY_CONFLICT`.
+`GET /api/mock/operations/{operationId}?username=alice` reads the user-scoped receipt, or returns
+`status=not_found` when the original request can be replayed with the same key in this mock.
+
+Errors retain the existing `error` string and HTTP `status`, with additional `code`, `field`,
+`retryable` and `details` for edit failures. `DUPLICATE_VALUE`, `VALIDATION_ERROR` for names and
+`VERSION_CONFLICT` create a persistent correction card. The user chooses a suggestion, enters a
+custom name or cancels. Suggestions are not guaranteed to remain available; every submission
+checks the backend again. Version conflicts display the latest name/version and require an explicit
+choice before retrying. A corrected request receives a new operation ID.
+
+Transport errors leave the operation journal in an `unknown` state. The agent/card checks the
+receipt before replaying the exact original request/key. Another edit is blocked until this is
+resolved. Cancelling verification does not claim rollback. A committed receipt is saved before
+cache, history and event processing so subsequent failures cannot erase the business outcome.
+
+Cards arrive as `user_input_required` NDJSON events. `done.reason=waiting_for_user` ends the
+current request with `partial=false` and releases the user's run lock. The completed interaction
+is recorded in history while the business task waits in `editing-workflow.json`; it is not a
+successful mutation or a saved preference. Refreshing the page restores `inputRequest` from
+`GET /api/agent/sessions/{id}`. Cards expire after 24 hours. Old, forged, foreign or already-used
+answers are rejected; a duplicate click cannot apply another edit.
+
+Submit a card through
+`POST /api/agent/sessions/{sessionId}/input-requests/{requestId}/answers` with one of
+`{"optionId":"name_1"}`, `{"text":"自定义名称"}` or `{"cancelled":true}`. The endpoint returns
+an NDJSON stream. Name corrections execute the saved draft directly; general clarification
+answers start a new model turn with the original intent, question and selected answer. The
+question-creation tool returns `waiting_for_user`, not a fabricated user answer or an unmatched
+provider tool call. This workflow uses ordinary function calling and needs no provider async-tool support.
+
+`EditingWorkflowTest` exercises real HTTP writes, the agent loop, persistent questions, correction
+resumption, lost-response recovery and immutable snapshots with a scripted model; no paid API is used.

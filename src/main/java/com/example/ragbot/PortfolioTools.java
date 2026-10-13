@@ -19,7 +19,7 @@ import tools.jackson.databind.node.ObjectNode;
 final class PortfolioTools {
   static final List<String> MONEY_FIELDS = List.of("cashBalance", "marketValue", "totalValue", "unrealizedPnl");
   private static final List<String> FIELDS = List.of("id", "username", "name", "currency", "cashBalance",
-      "marketValue", "totalValue", "unrealizedPnl", "positionCount", "asOf");
+      "marketValue", "totalValue", "unrealizedPnl", "positionCount", "asOf", "version", "updatedAt");
   private static final String DEFAULT_FIELDS = "id,username,name,currency,totalValue,positionCount,asOf";
   private final ObjectMapper mapper;
   private final MemoryStore store;
@@ -84,6 +84,8 @@ final class PortfolioTools {
   String contextHint(MockFinanceService.User user, String sessionId) throws IOException {
     return sets.contextHint(new AgentTool.Scope(user, sessionId, 0, new RunControl(30)));
   }
+
+  void invalidate(String userId) throws IOException { sets.invalidate(userId); }
 
   private AgentTool.Result query(JsonNode args, AgentTool.Scope scope) throws IOException, InterruptedException {
     var lock = store.userLock(scope.user().id()); lock.lockInterruptibly();
@@ -155,7 +157,8 @@ final class PortfolioTools {
   private PortfolioResultSets.Snapshot resolve(JsonNode args, AgentTool.Scope scope) throws IOException, InterruptedException {
     if (args.hasNonNull("resultSetId")) return sets.read(scope, args.path("resultSetId").asString());
     JsonNode state = sets.state(scope);
-    return state.hasNonNull("resultSetId") ? sets.read(scope, state.path("resultSetId").asString()) : sets.acquire(scope, false);
+    return state.hasNonNull("resultSetId") && !sets.outdated(scope, state)
+        ? sets.read(scope, state.path("resultSetId").asString()) : sets.acquire(scope, false);
   }
 
   private ObjectNode currentView(PortfolioResultSets.Snapshot snapshot, AgentTool.Scope scope) throws IOException {
@@ -219,6 +222,7 @@ final class PortfolioTools {
     for (String key : List.of("resultSetId", "fetchedAt", "expiresAt", "total", "complete"))
       data.put(key, snapshot.document().path(key));
     data.put("reused", snapshot.reused());
+    data.put("beforeEdit", snapshot.document().path("beforeEdit").asBoolean(false));
     String earliest = "", latest = "";
     for (JsonNode row : snapshot.rows()) {
       String asOf = java.time.Instant.parse(row.path("asOf").asString()).toString();

@@ -77,6 +77,11 @@ final class AgentLoop {
       if (!allowTools || calls.size() > 128) throw new IOException("Model returned an invalid final response");
       progress.emit(new AgentEvent.AnswerReset());
       executor.execute(calls, user, sessionId, current, state, progress, control);
+      if (state.inputRequest != null) {
+        String text = state.inputRequest.path("question").asString();
+        progress.emit(new AgentEvent.Delta(text));
+        return new AgentRun.Answer(text, true);
+      }
     }
     throw new IOException("Agent exhausted its model-round budget");
   }

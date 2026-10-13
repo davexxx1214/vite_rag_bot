@@ -32,6 +32,7 @@ final class NdjsonAgentListener implements AgentListener {
       case AgentEvent.ToolEnd e -> Map.of("type", "tool_end", "id", "tool-" + e.callId(), "name", e.name(),
           "ok", e.ok(), "elapsedMs", e.elapsedMs());
       case AgentEvent.Sources e -> Map.of("type", "sources", "sources", e.sources());
+      case AgentEvent.UserInputRequired e -> Map.of("type", "user_input_required", "inputRequest", e.inputRequest());
       case AgentEvent.ContextCompacted e -> Map.of("type", "context_compacted", "message", "Earlier conversation summarized; original history retained.");
       case AgentEvent.Done e -> Map.of("type", "done", "partial", e.partial(), "reason", e.reason(), "toolCalls", e.toolCalls());
     };
