@@ -6,7 +6,10 @@
 <body><pre id="results">Running…</pre>
 <script type="module">
 import DOMPurify from '/node_modules/dompurify/dist/purify.es.mjs';
+import { marked } from '/node_modules/marked/lib/marked.esm.js';
 import { updateMarkdown } from '/src/markdownMotion.ts';
+
+marked.setOptions({ gfm: true, breaks: true });
 
 const results = [];
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
@@ -28,6 +31,30 @@ try {
     assert(root.querySelector('[data-chat-reveal]')?.textContent === '：新增文字', 'Replayed old text');
     update('<p>历史回答：新增文字继续</p>');
     assert(root.querySelector('[data-chat-reveal]')?.textContent === '继续', 'Repeated earlier reveal');
+  });
+  check('Real marked paragraph deltas reveal despite trailing layout newlines', () => {
+    update(marked.parse('你好'), false);
+    const paragraph = root.firstChild;
+    update(marked.parse('你好，正在流式回答。'));
+    assert(root.firstChild === paragraph, 'Replaced streamed paragraph');
+    assert(root.textContent === '你好，正在流式回答。\n', 'Delayed real Markdown text');
+    assert(root.querySelector('[data-chat-reveal]')?.textContent === '，正在流式回答。', 'Paragraph delta did not reveal');
+    update(marked.parse('你好，正在流式回答。继续'));
+    assert(root.querySelector('[data-chat-reveal]')?.textContent === '继续', 'Replayed preceding paragraph text');
+  });
+  check('Real multi-paragraph streams reveal additions without animating layout whitespace', () => {
+    update(marked.parse('第一段\n\n第二段'), false);
+    update(marked.parse('第一段\n\n第二段继续'));
+    assert(root.querySelector('[data-chat-reveal]')?.textContent === '继续', 'Multi-paragraph delta did not reveal');
+    update(marked.parse('第一段\n\n第二段继续\n\n第三段'));
+    assert(root.querySelector('[data-chat-reveal]')?.textContent === '第三段', 'New paragraph did not reveal');
+    assert([...root.querySelectorAll('[data-chat-reveal]')].every(span => span.textContent.trim()), 'Animated layout whitespace');
+  });
+  check('Real Markdown emoji fragments preserve graphemes while revealing the new suffix', () => {
+    update(marked.parse('👨'), false);
+    update(marked.parse('👨‍👩‍👧‍👦好'));
+    assert(root.firstChild.firstChild.data === '👨‍👩‍👧‍👦', 'Split real Markdown emoji');
+    assert(root.querySelector('[data-chat-reveal]')?.textContent === '好', 'Emoji suffix did not reveal');
   });
   check('Markdown structure revisions settle without replaying text; links stay safe', () => {
     update('<p>**格式</p>', false);

@@ -45,11 +45,13 @@ function unwrap(span: Element) {
 
 // html must already have passed through DOMPurify. Animation never schedules content.
 export function updateMarkdown(root: HTMLElement, html: string, reveal: boolean) {
-  const previous = root.textContent ?? "";
+  // marked appends layout newlines after blocks. They are not an answer suffix:
+  // "你好\n" -> "你好世界\n" must still count as appended visible text.
+  const previous = (root.textContent ?? "").trimEnd();
   root.querySelectorAll("[data-chat-reveal]").forEach(unwrap);
   const template = document.createElement("template");
   template.innerHTML = html;
-  const text = template.content.textContent ?? "";
+  const text = (template.content.textContent ?? "").trimEnd();
   const added = text.length - previous.length;
   // Formatting may remove Markdown delimiters. Show that revision immediately.
   const animate = reveal && added > 0 && added <= MAX_ANIMATED_TEXT
@@ -71,7 +73,7 @@ export function updateMarkdown(root: HTMLElement, html: string, reveal: boolean)
     const end = offset + node.length;
     let start = Math.max(0, previous.length - offset);
     offset = end;
-    if (start >= node.length || count >= MAX_ANIMATED_NODES) continue;
+    if (start >= node.length || count >= MAX_ANIMATED_NODES || !node.data.trim()) continue;
     // A delta can extend an emoji/combining character. Never split that glyph.
     const boundary = segmenter!.segment(node.data).containing(start);
     if (boundary && boundary.index < start) start = boundary.index + boundary.segment.length;
