@@ -39,6 +39,7 @@ import { useAgentChat } from "./useAgentChat";
 import { AgentActivityPanel } from "./AgentActivityPanel";
 import { UserInputCard } from "./UserInputCard";
 import { SafeMarkdown } from "./SafeMarkdown";
+import { MainChatInputCaret, useMainChatCaretMode } from "./AnimatedCaret";
 
 type HelpDoc = {
   slug: string;
@@ -90,6 +91,8 @@ function App() {
   const followReply = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const mainInputHostRef = useRef<HTMLDivElement>(null);
+  const mainChatCaretMode = useMainChatCaretMode();
 
   const selectedDoc = useMemo(
     () => docs.find((doc) => doc.slug === selectedSlug) ?? docs[0],
@@ -444,19 +447,34 @@ function App() {
           </Box>
 
           <Paper component="form" onSubmit={(event) => void sendMessage(event)} variant="outlined" sx={{ m: "13px 14px 8px", p: "6px 7px 6px 12px", borderColor: "#cfd7d0", borderRadius: 1.75, display: "flex", alignItems: "flex-end", gap: 1, "&:focus-within": { borderColor: "#88a895", boxShadow: "0 0 0 3px #edf4ef" } }}>
-            <TextField
-              inputRef={inputRef}
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={handleInputKeyDown}
-              placeholder="查询组合，或试试：把 pf-001 改名为退休计划…"
-              multiline
-              maxRows={4}
-              fullWidth
-              variant="standard"
-              slotProps={{ htmlInput: { maxLength: 2000 }, input: { disableUnderline: true } }}
-              sx={{ "& textarea": { py: 0.8, fontSize: { xs: 16, sm: 12 }, lineHeight: 1.45 } }}
-            />
+            <Box ref={mainInputHostRef} sx={{ position: "relative", flex: 1, minWidth: 0 }}>
+              <TextField
+                inputRef={inputRef}
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={handleInputKeyDown}
+                placeholder="查询组合，或试试：把 pf-001 改名为退休计划…"
+                multiline
+                maxRows={4}
+                fullWidth
+                variant="standard"
+                slotProps={{ htmlInput: { maxLength: 2000 }, input: { disableUnderline: true } }}
+                sx={{
+                  "& textarea:not([aria-hidden='true'])": {
+                    py: 0.8,
+                    fontSize: { xs: 16, sm: 12 },
+                    lineHeight: 1.45,
+                    ...(mainChatCaretMode === "animated" ? { caretColor: "transparent" } : {}),
+                  },
+                }}
+              />
+              <MainChatInputCaret
+                hostRef={mainInputHostRef}
+                textareaRef={inputRef}
+                enabled={chatOpen}
+                disabled={submitting || chat.loading}
+              />
+            </Box>
             <IconButton type="submit" disabled={submitting || chat.loading || !chat.sessionId || !input.trim()} aria-label="Send message" sx={{ width: 38, height: 38, flex: "0 0 auto", borderRadius: 1.25, bgcolor: colors.greenDark, color: "white", "&:hover": { bgcolor: colors.green }, "&.Mui-disabled": { bgcolor: "#b7c1ba", color: "white" } }}>
               {submitting ? <CircularProgress size={17} color="inherit" /> : <ArrowUpwardRoundedIcon fontSize="small" />}
             </IconButton>
