@@ -6,15 +6,16 @@ The backend is a standard Maven project. Spring Boot provides the HTTP API, conf
 
 Chat responses use an NDJSON stream for tool activity, citations, context compression and answer text. Assistant messages support GitHub-Flavored Markdown and are sanitized with DOMPurify before rendering. The OpenAI API key remains in the Java process and is never exposed to Vite.
 
-Completed answers with a table, diagram or at least 240 characters offer **查看可视化**.
-Clicking loads the Answer me with HTML 0.5.2 renderer and opens a wide preview;
-no extra model request is made. The same Markdown remains visible and stored in
-history. The preview retains amounts, snapshot dates and citation markers, offers
-source links and an HTML download, and falls back to the original answer if a
-draft cannot render. Short replies and streamed answers do not load the renderer.
-Browser previews sanitize HTML/SVG before adding a fixed runtime in a sandbox;
-filesystem references, remote resources, videos and upstream CLI/skill workflows
-are not enabled. Production still runs as one Java JAR without a Node server.
+Tables and supported visual blocks display directly in assistant messages.
+Closed `flow`, `sequence`, `er`, `tree`, `timeline`, `limits`, `kv`, `callout` and
+`annot` fences load the Answer me with HTML 0.5.2 renderer on demand, without an
+extra model request or a preview button. Streaming prose continues immediately;
+incomplete fences and invalid components retain their original code. Rendered
+blocks survive later text updates, preserve citation markers and use sanitized
+HTML/SVG inside independent shadow roots. Styles and diagram IDs stay scoped to
+each block. Filesystem references, executable markup, videos and upstream
+CLI/skill workflows are not enabled. Production still runs as one Java JAR
+without a Node server. Markdown remains the stored conversation format.
 Upstream provenance and license are in `vendor/answer-me-with-html/`.
 
 ## Requirements

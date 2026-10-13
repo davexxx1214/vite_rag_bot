@@ -11,7 +11,8 @@ build adapters inline assets, disable filesystem images and user themes, and
 render pasted code without reading source files. The CLI, updates, housekeeping,
 video generation and agent skill instructions are not executed by the bot.
 
-The renderer and preview component load only when a reader opens a visual answer.
-The original Markdown remains the conversation record. The preview sanitizes the
-document before adding the trusted upstream runtime, and displays it in an opaque
-sandbox with a restrictive CSP.
+The inline renderer loads only when an assistant message contains a complete
+supported visual fence. The original Markdown remains the conversation record.
+Each block sanitizes HTML/SVG and uses a shadow root to isolate styles and SVG IDs.
+Inline blocks do not execute upstream or answer-supplied scripts. Invalid blocks
+fall back to their original code while surrounding text continues streaming.

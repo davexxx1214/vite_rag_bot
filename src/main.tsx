@@ -1,8 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createRoot } from "react-dom/client";
-import DOMPurify from "dompurify";
-import { marked } from "marked";
 import {
   AppBar,
   Avatar,
@@ -40,17 +38,7 @@ import "./style.css";
 import { useAgentChat } from "./useAgentChat";
 import { AgentActivityPanel } from "./AgentActivityPanel";
 import { UserInputCard } from "./UserInputCard";
-import { canVisualize } from "./visualAnswer";
-
-function UnavailableVisualAnswer({ onClose }: { onClose: () => void }) {
-  return <Dialog open onClose={onClose} fullWidth maxWidth="sm">
-    <DialogTitle>可视化回答</DialogTitle>
-    <DialogContent>预览组件暂时无法加载，完整文字回答仍保留在聊天中。</DialogContent>
-    <DialogActions><Button onClick={onClose}>返回聊天</Button></DialogActions>
-  </Dialog>;
-}
-const VisualAnswerDialog = lazy(() => import("./VisualAnswerDialog")
-  .catch(() => ({ default: UnavailableVisualAnswer })));
+import { SafeMarkdown } from "./SafeMarkdown";
 
 type HelpDoc = {
   slug: string;
@@ -89,31 +77,6 @@ const theme = createTheme({
   },
 });
 
-marked.setOptions({ gfm: true, breaks: true });
-
-function SafeMarkdown({ content, variant }: { content: string; variant: "doc" | "message" }) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const html = useMemo(() => {
-    const parsed = marked.parse(content, { async: false }) as string;
-    return DOMPurify.sanitize(parsed, { USE_PROFILES: { html: true } });
-  }, [content]);
-
-  useEffect(() => {
-    rootRef.current?.querySelectorAll("a").forEach((anchor) => {
-      anchor.target = "_blank";
-      anchor.rel = "noopener noreferrer";
-    });
-  }, [html]);
-
-  return (
-    <Box
-      ref={rootRef}
-      className={`markdown markdown-${variant}`}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
-}
-
 function App() {
   const [docs, setDocs] = useState<HelpDoc[]>([]);
   const [selectedSlug, setSelectedSlug] = useState("");
@@ -121,12 +84,11 @@ function App() {
   const [chatOpen, setChatOpen] = useState(false);
   const chat = useAgentChat();
   const { messages, submitting } = chat;
-  const [visualMessage, setVisualMessage] = useState<string | null>(null);
-  const visualIndex = messages.findIndex(message => message.id === visualMessage);
-  const selectedVisual = visualIndex >= 0 ? messages[visualIndex] : undefined;
-  useEffect(() => setVisualMessage(null), [chat.userId, chat.sessionId]);
   const [input, setInput] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
+  const followReply = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const selectedDoc = useMemo(
@@ -154,9 +116,32 @@ function App() {
     return () => controller.abort();
   }, []);
 
-  useEffect(() => {
-    if (chatOpen) messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  const scrollToLatest = () => {
+    followReply.current = true;
+    setShowLatest(false);
+    const container = messagesRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  };
+
+  useLayoutEffect(() => {
+    followReply.current = true;
+    setShowLatest(false);
+  }, [chatOpen, chat.userId, chat.sessionId]);
+
+  useLayoutEffect(() => {
+    const container = messagesRef.current;
+    if (chatOpen && container && followReply.current) container.scrollTop = container.scrollHeight;
   }, [chatOpen, messages, chat.inputRequest]);
+
+  useEffect(() => {
+    if (!chatOpen || !messagesContentRef.current) return;
+    const observer = new ResizeObserver(() => {
+      const container = messagesRef.current;
+      if (container && followReply.current) container.scrollTop = container.scrollHeight;
+    });
+    observer.observe(messagesContentRef.current);
+    return () => observer.disconnect();
+  }, [chatOpen]);
 
   const openChat = () => {
     setChatOpen(true);
@@ -165,7 +150,6 @@ function App() {
 
   const closeChat = () => {
     chat.cancel();
-    setVisualMessage(null);
     setChatOpen(false);
   };
 
@@ -173,6 +157,7 @@ function App() {
     event?.preventDefault();
     const content = input.trim();
     if (!content || submitting || chat.loading || !chat.sessionId) return;
+    scrollToLatest();
     setInput("");
     await chat.send(content);
     window.setTimeout(() => inputRef.current?.focus(), 0);
@@ -383,70 +368,79 @@ function App() {
             </Typography>}
           </Box>
 
-          <Box aria-live="polite" sx={{ overflowY: "auto", p: 2.25, bgcolor: "#f7f8f5" }}>
-            {chat.historyOffset > 0 && <Button fullWidth size="small" disabled={chat.historyBusy || submitting}
-              onClick={() => void chat.loadEarlier()}>{chat.historyBusy ? "Loading…" : "Load earlier messages"}</Button>}
-            {messages.map((message) => (
-              <Box key={message.id} sx={{ mb: 2.5, display: "flex", flexDirection: "column", alignItems: message.role === "user" ? "flex-end" : "flex-start" }}>
-                <Typography sx={{ mx: 0.5, mb: 0.75, color: "#8b948d", fontSize: 9, fontWeight: 800, letterSpacing: ".09em", textTransform: "uppercase" }}>
-                  {message.role === "assistant" ? "Help Bot" : "You"}
-                </Typography>
-                {message.role === "assistant" && (message.pending || message.partial || !!message.activities?.length) &&
-                  <AgentActivityPanel activities={message.activities || []} pending={message.pending}
-                    partial={message.partial} status={message.status} startedAt={message.startedAt} endedAt={message.endedAt} />}
-                <Paper
-                  variant="outlined"
-                  sx={{
-                    display: message.pending && !message.content ? "none" : undefined,
-                    maxWidth: "91%",
-                    minWidth: 0,
-                    overflowX: "auto",
-                    px: 1.75,
-                    py: 1.25,
-                    borderColor: message.role === "user" ? colors.greenDark : "#dde3dd",
-                    borderRadius: message.role === "user" ? "14px 4px 14px 14px" : "4px 14px 14px 14px",
-                    bgcolor: message.role === "user" ? colors.greenDark : "white",
-                    color: message.role === "user" ? "white" : "#344038",
-                  }}
-                >
-                  {message.role === "assistant" ? (
-                    <SafeMarkdown content={message.content} variant="message" />
-                  ) : (
-                    <Typography sx={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.55 }}>{message.content}</Typography>
-                  )}
-                </Paper>
-                {message.role === "assistant" && canVisualize(message.content, message.pending) && (
-                  <Button size="small" startIcon={<AutoAwesomeRoundedIcon />} onClick={() => setVisualMessage(message.id)}
-                    sx={{ mt: 0.75, fontSize: 11, color: colors.greenDark }}>查看可视化</Button>
-                )}
-                {!!message.sources?.length && (
-                  <Box sx={{ width: "91%", mt: 1.25, display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-                    <Typography sx={{ width: "100%", color: "#8a938c", fontSize: 9, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase" }}>
-                      Sources
+          <Box sx={{ position: "relative", minHeight: 0 }}>
+            <Box ref={messagesRef} className="chat-messages" aria-live="polite"
+              onScroll={event => {
+                const container = event.currentTarget;
+                const atBottom = container.scrollHeight - container.clientHeight - container.scrollTop <= 48;
+                followReply.current = atBottom;
+                setShowLatest(!atBottom);
+              }} sx={{ height: "100%", overflowY: "auto", p: 2.25, bgcolor: "#f7f8f5" }}>
+              <div ref={messagesContentRef}>
+                {chat.historyOffset > 0 && <Button fullWidth size="small" disabled={chat.historyBusy || submitting}
+                  onClick={() => void chat.loadEarlier()}>{chat.historyBusy ? "Loading…" : "Load earlier messages"}</Button>}
+                {messages.map((message) => (
+                  <Box key={message.id} sx={{ mb: 2.5, display: "flex", flexDirection: "column", alignItems: message.role === "user" ? "flex-end" : "flex-start" }}>
+                    <Typography sx={{ mx: 0.5, mb: 0.75, color: "#8b948d", fontSize: 9, fontWeight: 800, letterSpacing: ".09em", textTransform: "uppercase" }}>
+                      {message.role === "assistant" ? "Help Bot" : "You"}
                     </Typography>
-                    {message.sources.map((source) => (
-                      <Chip
-                        key={`${message.id}-${source.citation}`}
-                        component="a"
-                        href={source.source}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        clickable
-                        size="small"
-                        variant="outlined"
-                        label={`[${source.citation}] ${source.title} — ${source.section}`}
-                        deleteIcon={<OpenInNewRoundedIcon />}
-                        onDelete={() => window.open(source.source, "_blank", "noopener,noreferrer")}
-                        sx={{ maxWidth: "100%", height: "auto", bgcolor: "white", color: colors.green, borderColor: "#dbe2dc", "& .MuiChip-label": { display: "block", py: 0.65, whiteSpace: "normal", fontSize: 10 }, "& .MuiChip-deleteIcon": { fontSize: 14, color: colors.green } }}
-                      />
-                    ))}
+                    {message.role === "assistant" && (message.pending || message.partial || !!message.activities?.length) &&
+                      <AgentActivityPanel activities={message.activities || []} pending={message.pending}
+                        partial={message.partial} status={message.status} startedAt={message.startedAt} endedAt={message.endedAt} />}
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        display: message.pending && !message.content ? "none" : undefined,
+                        maxWidth: "91%",
+                        minWidth: 0,
+                        overflowX: "auto",
+                        px: 1.75,
+                        py: 1.25,
+                        borderColor: message.role === "user" ? colors.greenDark : "#dde3dd",
+                        borderRadius: message.role === "user" ? "14px 4px 14px 14px" : "4px 14px 14px 14px",
+                        bgcolor: message.role === "user" ? colors.greenDark : "white",
+                        color: message.role === "user" ? "white" : "#344038",
+                      }}
+                    >
+                      {message.role === "assistant" ? (
+                        <SafeMarkdown content={message.content} variant="message" streaming={message.pending} />
+                      ) : (
+                        <Typography sx={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.55 }}>{message.content}</Typography>
+                      )}
+                    </Paper>
+                    {!!message.sources?.length && (
+                      <Box sx={{ width: "91%", mt: 1.25, display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+                        <Typography sx={{ width: "100%", color: "#8a938c", fontSize: 9, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase" }}>
+                          Sources
+                        </Typography>
+                        {message.sources.map((source) => (
+                          <Chip
+                            key={`${message.id}-${source.citation}`}
+                            component="a"
+                            href={source.source}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            clickable
+                            size="small"
+                            variant="outlined"
+                            label={`[${source.citation}] ${source.title} — ${source.section}`}
+                            deleteIcon={<OpenInNewRoundedIcon />}
+                            onDelete={() => window.open(source.source, "_blank", "noopener,noreferrer")}
+                            sx={{ maxWidth: "100%", height: "auto", bgcolor: "white", color: colors.green, borderColor: "#dbe2dc", "& .MuiChip-label": { display: "block", py: 0.65, whiteSpace: "normal", fontSize: 10 }, "& .MuiChip-deleteIcon": { fontSize: 14, color: colors.green } }}
+                          />
+                        ))}
+                      </Box>
+                    )}
                   </Box>
-                )}
-              </Box>
-            ))}
-            {chat.inputRequest && <UserInputCard key={chat.inputRequest.requestId} request={chat.inputRequest}
-              busy={submitting || chat.loading} onAnswer={chat.answerInput} />}
-            <div ref={messagesEndRef} />
+                ))}
+                {chat.inputRequest && <UserInputCard key={chat.inputRequest.requestId} request={chat.inputRequest}
+                  busy={submitting || chat.loading} onAnswer={chat.answerInput} />}
+              </div>
+            </Box>
+            {showLatest && <Button size="small" variant="contained" onClick={scrollToLatest}
+              sx={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", borderRadius: 5 }}>
+              回到最新回答
+            </Button>}
           </Box>
 
           <Paper component="form" onSubmit={(event) => void sendMessage(event)} variant="outlined" sx={{ m: "13px 14px 8px", p: "6px 7px 6px 12px", borderColor: "#cfd7d0", borderRadius: 1.75, display: "flex", alignItems: "flex-end", gap: 1, "&:focus-within": { borderColor: "#88a895", boxShadow: "0 0 0 3px #edf4ef" } }}>
@@ -461,7 +455,7 @@ function App() {
               fullWidth
               variant="standard"
               slotProps={{ htmlInput: { maxLength: 2000 }, input: { disableUnderline: true } }}
-              sx={{ "& textarea": { py: 0.8, fontSize: 12, lineHeight: 1.45 } }}
+              sx={{ "& textarea": { py: 0.8, fontSize: { xs: 16, sm: 12 }, lineHeight: 1.45 } }}
             />
             <IconButton type="submit" disabled={submitting || chat.loading || !chat.sessionId || !input.trim()} aria-label="Send message" sx={{ width: 38, height: 38, flex: "0 0 auto", borderRadius: 1.25, bgcolor: colors.greenDark, color: "white", "&:hover": { bgcolor: colors.green }, "&.Mui-disabled": { bgcolor: "#b7c1ba", color: "white" } }}>
               {submitting ? <CircularProgress size={17} color="inherit" /> : <ArrowUpwardRoundedIcon fontSize="small" />}
@@ -473,14 +467,6 @@ function App() {
           </Typography>
         </Paper>
       )}
-      {selectedVisual && <Suspense fallback={<Dialog open onClose={() => setVisualMessage(null)} fullWidth maxWidth="sm">
-        <DialogTitle>正在加载可视化回答…</DialogTitle>
-        <DialogContent><CircularProgress size={24} /></DialogContent>
-        <DialogActions><Button onClick={() => setVisualMessage(null)}>返回聊天</Button></DialogActions>
-      </Dialog>}>
-        <VisualAnswerDialog message={selectedVisual} question={messages[visualIndex - 1]?.role === "user" ? messages[visualIndex - 1].content : "回答概览"}
-          onClose={() => setVisualMessage(null)} />
-      </Suspense>}
       <Dialog open={chat.memoryOpen} onClose={() => !chat.memoryBusy && chat.setMemoryOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Saved memory · {chat.users.find(user => user.id === chat.userId)?.username}</DialogTitle>
         <DialogContent>

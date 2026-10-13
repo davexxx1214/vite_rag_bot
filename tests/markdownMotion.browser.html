@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Markdown motion browser checks</title>
+<link rel="stylesheet" href="/src/style.css">
+<body><pre id="results">Running…</pre>
+<script type="module">
+import DOMPurify from '/node_modules/dompurify/dist/purify.es.mjs';
+import { updateMarkdown } from '/src/markdownMotion.ts';
+
+const results = [];
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const root = document.createElement('div');
+document.body.appendChild(root);
+const update = (html, reveal = true) => updateMarkdown(root, DOMPurify.sanitize(html), reveal);
+const check = (name, fn) => { fn(); results.push(name); };
+try {
+  check('History renders immediately without animation', () => {
+    update('<p>历史回答</p>', false);
+    assert(root.textContent === '历史回答' && !root.querySelector('[data-chat-reveal]'), 'History animated');
+  });
+  check('Only appended text animates, existing DOM survives, and text is immediately available', () => {
+    const paragraph = root.firstChild;
+    const original = paragraph.firstChild;
+    update('<p>历史回答：新增文字</p>');
+    assert(root.firstChild === paragraph && paragraph.firstChild === original, 'Replaced existing nodes');
+    assert(root.textContent === '历史回答：新增文字', 'Delayed text');
+    assert(root.querySelector('[data-chat-reveal]')?.textContent === '：新增文字', 'Replayed old text');
+    update('<p>历史回答：新增文字继续</p>');
+    assert(root.querySelector('[data-chat-reveal]')?.textContent === '继续', 'Repeated earlier reveal');
+  });
+  check('Markdown structure revisions settle without replaying text; links stay safe', () => {
+    update('<p>**格式</p>', false);
+    update('<p><strong>格式完成</strong> <a href="https://example.com">链接</a></p>');
+    assert(!root.querySelector('[data-chat-reveal]'), 'Animated a structural revision');
+    assert(root.querySelector('strong')?.textContent === '格式完成', 'Lost formatting');
+    assert(root.querySelector('a')?.rel === 'noopener noreferrer', 'Unsafe link');
+    update('<p><img src=x onerror="window.motionXss=true"><a href="javascript:alert(1)">bad</a></p>');
+    assert(!root.querySelector('[onerror], [href^="javascript:"]'), 'Sanitization lost');
+  });
+  check('Split emoji and combining characters remain intact', () => {
+    update('<p>👨</p>', false);
+    update('<p>👨‍👩‍👧‍👦好</p>');
+    assert(root.firstChild.firstChild.data === '👨‍👩‍👧‍👦', 'Split emoji');
+    assert(root.querySelector('[data-chat-reveal]')?.textContent === '好', 'Wrong emoji boundary');
+    update('<p>e</p>', false);
+    update('<p>e\u0301!</p>');
+    assert(root.firstChild.firstChild.data === 'e\u0301', 'Split combining character');
+  });
+  check('Large bursts bypass animation and small multi-node bursts have bounded wrappers', () => {
+    update('');
+    update('<p>' + '字'.repeat(5000) + '</p>');
+    assert(root.textContent.length === 5000 && !root.querySelector('[data-chat-reveal]'), 'Large burst delayed');
+    update('');
+    update('<p>' + '<em>字</em>'.repeat(100) + '</p>');
+    assert(root.querySelectorAll('[data-chat-reveal]').length <= 24, 'Unbounded animated nodes');
+  });
+  check('Reduced motion displays text immediately without wrappers', () => {
+    const matchMedia = window.matchMedia;
+    try {
+      window.matchMedia = () => ({ matches: true });
+      update('');
+      update('<p>减少动态效果</p>');
+      assert(root.textContent === '减少动态效果' && !root.querySelector('[data-chat-reveal]'), 'Reduced motion ignored');
+    } finally { window.matchMedia = matchMedia; }
+  });
+  check('Answer reset clears stale text; code and tables keep their structure', () => {
+    update('');
+    assert(root.childNodes.length === 0, 'Stale reset text');
+    update('<pre><code>const x = 1;</code></pre><table><tbody><tr><td>$100</td></tr></tbody></table>');
+    assert(root.querySelector('code')?.textContent === 'const x = 1;', 'Lost code');
+    assert(root.querySelector('td')?.textContent === '$100', 'Lost table');
+  });
+  check('Reveal has a fixed 90ms duration and zero scheduling delay', () => {
+    const span = root.querySelector('[data-chat-reveal]');
+    assert(span, 'Missing reveal');
+    const style = getComputedStyle(span);
+    assert(style.animationDuration === '0.09s' && style.animationDelay === '0s', 'Queued animation');
+  });
+  // Drive the completion event explicitly: background tabs can suspend CSS timelines.
+  root.querySelectorAll('[data-chat-reveal]').forEach(span =>
+    span.dispatchEvent(new AnimationEvent('animationend')));
+  assert(!root.querySelector('[data-chat-reveal]'), 'Animation wrappers were not cleaned up');
+  results.push('Completion events clean up transient animation wrappers');
+  window.motionChecks = { passed: results.length, results };
+  document.querySelector('#results').textContent = JSON.stringify(window.motionChecks, null, 2);
+} catch (error) {
+  window.motionChecks = { failed: error.message, results };
+  document.querySelector('#results').textContent = JSON.stringify(window.motionChecks, null, 2);
+  throw error;
+}
+</script>
