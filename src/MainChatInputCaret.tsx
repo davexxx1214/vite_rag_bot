@@ -100,6 +100,7 @@ export function MainChatInputCaret({
         rafRef.current = null;
         if (!dirtyRef.current) return;
         dirtyRef.current = false;
+        syncGeometry();
 
         if (!focusedRef.current || composingRef.current || disabled || textarea.disabled) {
           targetRef.current = null;
@@ -107,7 +108,6 @@ export function MainChatInputCaret({
           return;
         }
 
-        syncGeometry();
         const next = measureCaretInTextarea(textarea, mirror);
         if (!next) {
           targetRef.current = null;
@@ -157,7 +157,6 @@ export function MainChatInputCaret({
     };
 
     const ro = new ResizeObserver(() => {
-      syncGeometry();
       scheduleMeasure();
     });
     ro.observe(textarea);

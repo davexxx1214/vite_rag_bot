@@ -135,7 +135,7 @@ public final class ToolRegistry {
       if (schema.get("enum") instanceof List<?> allowed && !allowed.contains(value.asString()))
         throw new ApiRequestException(HttpStatus.BAD_REQUEST, "Invalid tool argument: " + field.getKey());
     }
-    return tool.execute(arguments, new AgentTool.Scope(scope.user(), scope.sessionId(), 0, scope.control()));
+    return tool.execute(arguments, new AgentTool.Scope(scope.user(), scope.sessionId(), 0, scope.control(), scope.listener()));
   }
 
   @SuppressWarnings("unchecked")

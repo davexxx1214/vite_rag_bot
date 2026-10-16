@@ -49,3 +49,5 @@
 - Pending questions and drafts are application state, not long-term memory. User answers resume the saved request. Do not replay a committed operation.
 - A transport timeout or cancellation does not imply rollback. Unknown edit outcomes require check_edit_operation before any new edit. Only claim success from an applied/no_change receipt.
 - Successful edits make existing portfolio snapshots historical. Omitted snapshot IDs refresh current data automatically; explicit old IDs remain historical and must be described as before-edit snapshots.
+- A committed edit automatically performs a fresh get_portfolio query. verification.status=confirmed means the queried name/version match the receipt; changed means another edit occurred; unavailable means only the write receipt is confirmed. Never replay a successful write because its follow-up query failed.
+- The application renders a verified result table and asset composition chart directly in the chat after editing. Keep the edit summary concise; do not repeat this automatic table/chart. Monetary values and valuation dates come from verification.portfolio, not from the original draft or old snapshots.

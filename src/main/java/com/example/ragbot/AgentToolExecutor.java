@@ -52,7 +52,7 @@ final class AgentToolExecutor {
         progress.emit(new AgentEvent.ToolStart(id, name, args));
         batch.add(new Call(id, name, args, admitted, started));
       }
-      var scope = new AgentTool.Scope(user, sessionId, 0, control);
+      var scope = new AgentTool.Scope(user, sessionId, 0, control, progress::emit);
       List<Outcome> outcomes = new ArrayList<>();
       Exception fatal = null;
       if (batch.size() == 1) outcomes.add(invoke(batch.getFirst(), scope));
@@ -77,6 +77,10 @@ final class AgentToolExecutor {
                 ? outcome.result() : tools.complete(call.name(), outcome.result(),
                     new AgentTool.Scope(user, sessionId, state.sources.size(), control));
             output = result.output();
+            if (List.of("update_portfolio", "check_edit_operation").contains(call.name())) {
+              AgentEvent.EditResult view = state.captureEdit(output);
+              if (view != null) events.add(view);
+            }
             if (output.has("error")) ok = false;
             if (output.path("status").asString().equals("waiting_for_user")) {
               state.inputRequest = output.path("inputRequest"); state.stopReason = "waiting_for_user";

@@ -17,6 +17,19 @@ final class AgentRun {
   boolean finalRequested;
   String stopReason = "";
   JsonNode inputRequest;
+  final java.util.Map<String, String> editViews = new java.util.LinkedHashMap<>();
+
+  AgentEvent.EditResult captureEdit(JsonNode output) {
+    String markdown = PortfolioEditView.markdown(output);
+    if (markdown.isBlank()) return null;
+    String id = output.path("operationId").asString();
+    editViews.put(id, markdown);
+    return new AgentEvent.EditResult(id, markdown);
+  }
+
+  String withEditViews(String text) {
+    return editViews.isEmpty() ? text : text + "\n\n" + String.join("\n\n", editViews.values());
+  }
 
   record Answer(String text, boolean completed) {}
 }

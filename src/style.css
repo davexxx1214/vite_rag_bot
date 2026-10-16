@@ -113,8 +113,9 @@ body {
 }
 
 .markdown-message {
-  font-size: 13px;
-  line-height: 1.55;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.65;
 }
 
 .markdown-message h1,
@@ -130,7 +131,171 @@ body {
 .markdown-message pre {
   max-width: 100%;
   padding: 0.8rem;
+  font-size: 12px;
+}
+
+.cds-codeblock {
+  margin: 0 0 1em;
+  border: 1px solid #26352c;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #141c17;
+  color: #e8eee9;
+  box-shadow: 0 1px 3px rgba(15, 25, 19, 0.08);
+}
+
+.cds-codeblock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 15, 12, 0.55);
+  color: #9eab9f;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 11px;
+  user-select: none;
+}
+
+.cds-codeblock-lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #cbd5cc;
+  font-weight: 600;
+}
+
+.cds-codeblock-glyph {
+  color: #78887b;
+  vertical-align: -0.08em;
+}
+
+.cds-code-copy {
+  appearance: none;
+  border: 0;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: transparent;
+  color: #a8b5aa;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.cds-code-copy:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cds-code-copy[data-copied="1"] {
+  color: #5eead4;
+  font-weight: 600;
+}
+
+.cds-codeblock pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.markdown-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: 1em;
+  overscroll-behavior-x: contain;
+}
+
+.markdown-table-scroll table {
+  margin-bottom: 0;
+}
+
+.markdown-message th,
+.markdown-message td {
+  min-width: 6em;
+  border-width: 0 0 1px;
+  border-color: #e3e8e2;
+}
+
+.markdown-message th {
+  background: #f4f6f2;
+}
+
+.chat-panel {
+  --chat-border: rgba(33, 53, 40, 0.12);
+  --chat-border-strong: rgba(33, 53, 40, 0.22);
+  --chat-floating-shadow: 0 3px 10px rgba(24, 39, 29, 0.09), 0 20px 64px rgba(24, 39, 29, 0.15);
+  --chat-control-shadow: 0 2px 5px rgba(24, 39, 29, 0.06), 0 6px 18px rgba(24, 39, 29, 0.08);
+  --chat-composer-shadow: 0 4px 20px rgba(24, 39, 29, 0.045), inset 0 0 0 1px rgba(33, 53, 40, 0.12);
+  --chat-composer-shadow-hover: 0 4px 20px rgba(24, 39, 29, 0.065), inset 0 0 0 1px rgba(33, 53, 40, 0.2);
+  --chat-focus-ring: 0 6px 22px rgba(18, 108, 70, 0.09), inset 0 0 0 1.5px rgba(18, 108, 70, 0.48), 0 0 0 3px rgba(18, 108, 70, 0.1);
+}
+
+.chat-panel .chat-more-tools {
+  display: none;
+}
+
+.chat-panel :is(button, a, summary, [tabindex="0"]):focus-visible {
+  outline: 2px solid #126c46;
+  outline-offset: 3px;
+}
+
+.chat-panel .chat-messages:focus-visible {
+  outline-offset: -3px;
+}
+
+.chat-composer {
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@container chat (max-width: 460px) {
+  .chat-panel .chat-memory-button,
+  .chat-panel .chat-secondary-tools {
+    display: none;
+  }
+
+  .chat-panel .chat-more-tools {
+    display: inline-flex;
+  }
+}
+
+@container chat (max-width: 360px) {
+  .chat-panel .chat-controls,
+  .chat-panel .chat-header,
+  .chat-panel .chat-messages {
+    padding: 12px;
+  }
+
+  .chat-panel .chat-subtitle {
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .chat-panel .chat-composer {
+    margin-inline: 10px;
+  }
+
+  .chat-panel .chat-composer-hint {
+    font-size: 10px;
+  }
 }
 
 .inline-visual {
@@ -144,9 +309,58 @@ body {
 }
 
 .chat-messages {
+  --chat-fade-top: 0px;
+  --chat-fade-bottom: 0px;
   scroll-behavior: auto;
   overflow-anchor: none;
   overscroll-behavior: contain;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(0, 0, 0, 0.05) calc(var(--chat-fade-top) * 0.15),
+    rgba(0, 0, 0, 0.15) calc(var(--chat-fade-top) * 0.3),
+    rgba(0, 0, 0, 0.3) calc(var(--chat-fade-top) * 0.45),
+    rgba(0, 0, 0, 0.5) calc(var(--chat-fade-top) * 0.6),
+    rgba(0, 0, 0, 0.7) calc(var(--chat-fade-top) * 0.75),
+    rgba(0, 0, 0, 0.85) calc(var(--chat-fade-top) * 0.87),
+    #000 var(--chat-fade-top),
+    #000 calc(100% - var(--chat-fade-bottom)),
+    rgba(0, 0, 0, 0.85) calc(100% - var(--chat-fade-bottom) * 0.87),
+    rgba(0, 0, 0, 0.7) calc(100% - var(--chat-fade-bottom) * 0.75),
+    rgba(0, 0, 0, 0.5) calc(100% - var(--chat-fade-bottom) * 0.6),
+    rgba(0, 0, 0, 0.3) calc(100% - var(--chat-fade-bottom) * 0.45),
+    rgba(0, 0, 0, 0.15) calc(100% - var(--chat-fade-bottom) * 0.3),
+    rgba(0, 0, 0, 0.05) calc(100% - var(--chat-fade-bottom) * 0.15),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(0, 0, 0, 0.05) calc(var(--chat-fade-top) * 0.15),
+    rgba(0, 0, 0, 0.15) calc(var(--chat-fade-top) * 0.3),
+    rgba(0, 0, 0, 0.3) calc(var(--chat-fade-top) * 0.45),
+    rgba(0, 0, 0, 0.5) calc(var(--chat-fade-top) * 0.6),
+    rgba(0, 0, 0, 0.7) calc(var(--chat-fade-top) * 0.75),
+    rgba(0, 0, 0, 0.85) calc(var(--chat-fade-top) * 0.87),
+    #000 var(--chat-fade-top),
+    #000 calc(100% - var(--chat-fade-bottom)),
+    rgba(0, 0, 0, 0.85) calc(100% - var(--chat-fade-bottom) * 0.87),
+    rgba(0, 0, 0, 0.7) calc(100% - var(--chat-fade-bottom) * 0.75),
+    rgba(0, 0, 0, 0.5) calc(100% - var(--chat-fade-bottom) * 0.6),
+    rgba(0, 0, 0, 0.3) calc(100% - var(--chat-fade-bottom) * 0.45),
+    rgba(0, 0, 0, 0.15) calc(100% - var(--chat-fade-bottom) * 0.3),
+    rgba(0, 0, 0, 0.05) calc(100% - var(--chat-fade-bottom) * 0.15),
+    transparent
+  );
+}
+
+.chat-message-user > .MuiPaper-root {
+  animation: cds-user-bubble-enter 280ms cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+
+@keyframes cds-user-bubble-enter {
+  from { opacity: 0; transform: scale(0.95) translateY(4px); }
+  to { opacity: 1; transform: none; }
 }
 
 .chat-text-reveal {
@@ -192,5 +406,6 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .chat-text-reveal, .thinking-dots > span { animation: none; }
+  .chat-text-reveal, .thinking-dots > span, .chat-message-user > .MuiPaper-root { animation: none; }
+  .chat-composer { transition: none; }
 }

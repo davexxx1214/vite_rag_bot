@@ -30,7 +30,7 @@ final class AgentHistoryRecorder {
 
   void save(AgentRun.Answer answer) throws IOException {
     store.append(userId, sessionId, new MemoryStore.StoredTurn(index, Instant.now().toString(), message,
-        List.copyOf(run.transcript), answer.text(), List.copyOf(run.sources), answer.completed(), model));
+        List.copyOf(run.transcript), run.withEditViews(answer.text()), List.copyOf(run.sources), answer.completed(), model));
     stored = true;
   }
 

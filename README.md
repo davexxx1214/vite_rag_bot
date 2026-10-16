@@ -18,6 +18,18 @@ CLI/skill workflows are not enabled. Production still runs as one Java JAR
 without a Node server. Markdown remains the stored conversation format.
 Upstream provenance and license are in `vendor/answer-me-with-html/`.
 
+## Chat interaction
+
+The non-modal chat panel adapts its controls to its own width, moving secondary
+actions into the overflow menu in narrow layouts. Scrolling upward pauses reply
+following; new text shows a “有新内容” button without moving the reading position.
+Loading earlier messages preserves the visible history position. Streamed text
+updates are batched per animation frame, while Markdown tables and code blocks
+scroll independently. Escape closes the panel and restores focus to Ask AI;
+Enter sends, Shift+Enter inserts a newline, and IME composition does not send.
+`pnpm test:ui` includes browser regressions when Chrome or Edge is available
+(or configured with `CHROME_PATH`), and skips those checks otherwise.
+
 ## Requirements
 
 - JDK 21 or newer (`java` on `PATH`)
@@ -534,6 +546,23 @@ ownership, version and uniqueness before changing the name. Amounts and valuatio
 unchanged; `version` and `updatedAt` track name edits. A name must contain 1–80 characters without
 control characters. Within one user, stripped names are unique ignoring case; other users may
 use the same name. Submitting an unchanged name returns `no_change` without increasing its version.
+
+After an `applied` or `no_change` receipt, the server performs an additional user-scoped
+`GET /portfolios/{id}` and shows a query step in the chat activity. Its `verification` contains
+`status`, `queriedAt`, `source` and, when available, the queried `portfolio`. `confirmed` means
+the queried name/version match the receipt; `changed` means another edit occurred before the
+read; `unavailable` means the edit is saved but its follow-up query could not be completed.
+A failed follow-up query never converts a committed write into a rejected or unknown write.
+`check_edit_operation` can retry verification without submitting another successful PATCH.
+
+An `edit_result` event appends a server-generated table and an asset composition chart directly
+to the assistant message, using the existing Markdown/`limits` inline renderer. Amounts are
+formatted with `BigDecimal`, grouped in the portfolio's own currency, and accompanied by valuation,
+edit and query timestamps. Zero, negative or inconsistent totals retain the table without an
+unsupported percentage chart. Results survive model text resets and are deduplicated by operation
+ID. The same Markdown is saved in conversation history, so page refresh restores the exact query
+snapshot without an extra backend fetch. Both direct edits and correction-card continuations use
+this workflow; cancellation and rejected edits do not produce a result table/chart.
 
 `PATCH /api/mock/portfolios/{id}?username=alice` accepts exactly
 `{"name":"退休计划","expectedVersion":1}` and requires an `Idempotency-Key` header. Successful

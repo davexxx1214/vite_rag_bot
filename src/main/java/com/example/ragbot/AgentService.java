@@ -82,11 +82,13 @@ public final class AgentService {
       else tools.editing().start(userId, sessionId, message);
       long started = progress.start("memory-load", "正在读取用户记忆与会话历史…", "");
       history.begin();
-      if (inputAnswer != null) resume = tools.editing().answer(new AgentTool.Scope(user, sessionId, 0, control), inputAnswer);
+      if (inputAnswer != null) resume = tools.editing().answer(new AgentTool.Scope(user, sessionId, 0, control, progress::emit), inputAnswer);
       if (resume != null) {
         workMessage = resume.message();
         if (resume.result() != null) {
           var result = resume.result();
+          AgentEvent.EditResult view = state.captureEdit(result);
+          if (view != null) progress.emit(view);
           state.successfulResults.add(result);
           state.transcript.add(mapper.valueToTree(Map.of("role", "assistant", "content", "Edit workflow result: " + result)));
           if (result.path("status").asString().equals("waiting_for_user")) {

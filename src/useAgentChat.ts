@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { applyActivityEvent, finishActivities } from "./agentActivity";
 import type { Activity, ActivityEvent } from "./agentActivity";
 import type { InputAnswer, InputRequest } from "./inputRequest";
+import { mergeEditResult, withEditResults } from "./editResultViews";
+import type { EditResultView } from "./editResultViews";
+import { createFrameBatch } from "./frameBatch";
 
 export type Source = {
   citation: string;
@@ -36,6 +39,7 @@ type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "answer_reset" }
   | { type: "user_input_required"; inputRequest: InputRequest }
+  | { type: "edit_result"; operationId: string; markdown: string }
   | { type: "error"; error: string }
   | { type: "done"; partial?: boolean; reason?: string; toolCalls?: number };
 
@@ -235,9 +239,15 @@ export function useAgentChat() {
     // Give the server's 240-second agent deadline time to deliver a terminal event.
     const timeout = window.setTimeout(() => { timedOut = true; cancel(); }, 270_000);
     let answer = "";
+    let editViews: EditResultView[] = [];
     let complete = false;
     let partial = false;
     let activities: Activity[] = [];
+    const answerUpdates = createFrameBatch(
+      () => update(replyId, { content: withEditResults(answer, editViews) }),
+      callback => window.requestAnimationFrame(callback),
+      frame => window.cancelAnimationFrame(frame),
+    );
     try {
       const requestPath = inputAnswer && inputRequest
         ? `/api/agent/sessions/${sessionId}/input-requests/${inputRequest.requestId}/answers` : "/api/chat";
@@ -256,6 +266,7 @@ export function useAgentChat() {
       const consume = (line: string) => {
         if (!line.trim()) return;
         const event = JSON.parse(line) as StreamEvent;
+        if (event.type !== "delta") answerUpdates.flush();
         switch (event.type) {
           case "status": case "context_compacted": update(replyId, { status: event.message }); break;
           case "activity_start": case "activity_update": case "activity_end": case "tool_start": case "tool_end":
@@ -263,9 +274,13 @@ export function useAgentChat() {
             update(replyId, { activities });
             break;
           case "sources": update(replyId, { sources: event.sources }); break;
-          case "answer_reset": answer = ""; update(replyId, { content: "" }); break;
+          case "answer_reset": answer = ""; update(replyId, { content: withEditResults(answer, editViews) }); break;
+          case "edit_result":
+            editViews = mergeEditResult(editViews, event);
+            update(replyId, { content: withEditResults(answer, editViews) });
+            break;
           case "user_input_required": setInputRequest(event.inputRequest); update(replyId, { status: "等待你的选择" }); break;
-          case "delta": answer += event.text; update(replyId, { content: answer }); break;
+          case "delta": answer += event.text; answerUpdates.schedule(); break;
           case "error": throw new Error(event.error);
           case "done": partial = !!event.partial; complete = true; break;
         }
@@ -278,7 +293,8 @@ export function useAgentChat() {
         for (const line of lines) consume(line);
         if (done) { consume(buffer); break; }
       }
-      if (!complete || !answer.trim()) throw new Error("The response ended before the answer completed");
+      if (!complete || !withEditResults(answer, editViews).trim()) throw new Error("The response ended before the answer completed");
+      answerUpdates.flush();
       const endedAt = Date.now();
       activities = finishActivities(activities, partial ? "cancelled" : "completed", endedAt);
       update(replyId, { pending: false, partial, activities, endedAt });
@@ -290,13 +306,16 @@ export function useAgentChat() {
       }
       catch { /* A list refresh failure must not turn a completed answer into an error. */ }
     } catch (cause) {
+      answerUpdates.cancel();
       const cancelled = controller.signal.aborted;
       const message = cancelled ? (timedOut ? "The request timed out." : "The request was cancelled.")
         : cause instanceof Error ? cause.message : "Unable to complete your request";
       const endedAt = Date.now();
       activities = finishActivities(activities, cancelled && !timedOut ? "cancelled" : "failed", endedAt);
-      update(replyId, { pending: false, activities, endedAt, content: answer ? `${answer}\n\n_${message}_` : message });
+      const retained = withEditResults(answer, editViews);
+      update(replyId, { pending: false, activities, endedAt, content: retained ? `${retained}\n\n_${message}_` : message });
     } finally {
+      answerUpdates.cancel();
       window.clearTimeout(timeout);
       if (active.current === run) active.current = null;
       setSubmitting(false);

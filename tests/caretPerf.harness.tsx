@@ -2,7 +2,7 @@ import { createRoot } from "react-dom/client";
 import { useRef, useState } from "react";
 import { Box, TextField } from "@mui/material";
 import { ThemeProvider, createTheme, CssBaseline } from "@mui/material";
-import { MainChatInputCaret, useMainChatCaretMode } from "../src/AnimatedCaret";
+import { MainChatInputCaret, useMainChatCaretMode } from "../src/MainChatInputCaret";
 
 function Harness() {
   const [value, setValue] = useState(() => {

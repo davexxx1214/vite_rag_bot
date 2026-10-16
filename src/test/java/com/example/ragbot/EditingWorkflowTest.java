@@ -216,10 +216,76 @@ class EditingWorkflowTest {
 
   private Map<String, Object> edit(String name, long version) { return Map.of("id", "pf-001", "name", name, "expectedVersion", version); }
 
+  @Test void directEditQueriesAfterPatchAndStoresTheSameInlineResultShownInTheStream() throws Exception {
+    try (var h = new Harness()) {
+      h.model.turns.add(new Model.Turn(List.of(h.call("update_portfolio", "edit", edit("核验后的名称", 1))), "", 100, 10));
+      h.model.turns.add(new Model.Turn(List.of(AgentTestSupport.answer(mapper, "修改成功，已重新查询。")), "修改成功，已重新查询。", 100, 10));
+      List<Map<String, Object>> events = h.run("将 pf-001 改名为核验后的名称");
+      assertThat(h.requests).containsExactly("GET /portfolios/pf-001", "PATCH /portfolios/pf-001", "GET /portfolios/pf-001");
+      assertThat(events).anySatisfy(event -> assertThat(event).containsEntry("type", "activity_start").containsEntry("message", "正在重新查询编辑后的投资组合…"));
+      Map<String, Object> view = events.stream().filter(event -> event.get("type").equals("edit_result")).findFirst().orElseThrow();
+      String markdown = view.get("markdown").toString();
+      assertThat(markdown).contains("| 当前名称 | 核验后的名称 |", "| 版本 | 2 |", "```limits", "1850 / 5000", "3150 / 5000", "2026-10-09T16:00:00Z");
+      assertThat(h.store.session("user-001", h.session).turns().getFirst().answer()).contains(markdown);
+      // Session display reads the original verified snapshot; it does not issue a new GET on refresh.
+      assertThat(h.store.page("user-001", h.session, null, 50, false).turns().getFirst().answer()).contains(markdown);
+    }
+  }
+
+  @Test void correctionResumeAlsoQueriesAndReturnsAnInlineResult() throws Exception {
+    try (var h = new Harness()) {
+      JsonNode question = h.execute("update_portfolio", edit("Hong Kong Income", 1)).path("inputRequest");
+      var events = new ArrayList<Map<String, Object>>();
+      h.agent.run("user-001", h.session, "纠正名称", new EditingWorkflow.InputAnswer(question.path("requestId").asString(), null, "纠正名称", false), events::add);
+      assertThat(h.requests.getLast()).isEqualTo("GET /portfolios/pf-001");
+      assertThat(events).anySatisfy(event -> {
+        assertThat(event).containsEntry("type", "edit_result");
+        assertThat(event.get("markdown").toString()).contains("| 当前名称 | 纠正名称 |", "```limits");
+      });
+      assertThat(h.model.calls.get()).isZero();
+    }
+  }
+
+  @Test void failedReadbackKeepsTheWriteCommittedAndCheckingRetriesOnlyTheQuery() throws Exception {
+    try (var h = new Harness()) {
+      h.failReadback.set(true);
+      JsonNode result = h.execute("update_portfolio", edit("Saved Despite Read Failure", 1));
+      assertThat(result.path("status").asString()).isEqualTo("applied");
+      assertThat(result.path("verification").path("status").asString()).isEqualTo("unavailable");
+      assertThat(PortfolioEditView.markdown(result)).contains("追加查询未完成").doesNotContain("```limits", "| 现金余额");
+      assertThat(h.fixtures.portfolio("pf-001", "alice").version()).isEqualTo(2);
+      assertThat(h.tools.editing().publicQuestion("user-001", h.session).isNull()).isTrue();
+      h.failReadback.set(false);
+      JsonNode checked = h.execute("check_edit_operation", Map.of());
+      assertThat(checked.path("verification").path("status").asString()).isEqualTo("confirmed");
+      assertThat(h.patchCalls.get()).isEqualTo(1);
+    }
+  }
+
+  @Test void concurrentChangeAndForeignReadbacksNeverMasqueradeAsVerifiedRequestedValues() throws Exception {
+    try (var h = new Harness()) {
+      h.changeAfterWrite.set(true);
+      JsonNode result = h.execute("update_portfolio", edit("First Name", 1));
+      assertThat(result.path("portfolio").path("name").asString()).isEqualTo("First Name");
+      assertThat(result.path("verification").path("status").asString()).isEqualTo("changed");
+      String view = PortfolioEditView.markdown(result);
+      assertThat(view).contains("对象又发生了变化", "| 当前名称 | 后续编辑 |", "| 版本 | 3 |");
+      h.foreignReadback.set(true);
+      JsonNode checked = h.execute("check_edit_operation", Map.of());
+      assertThat(checked.path("verification").path("status").asString()).isEqualTo("unavailable");
+      assertThat(checked.path("verification").has("portfolio")).isFalse();
+      assertThat(h.patchCalls.get()).isEqualTo(1);
+    }
+  }
+
   private final class Harness implements AutoCloseable {
     final MockFinanceService fixtures = new MockFinanceService();
     final AtomicBoolean dropReply = new AtomicBoolean();
     final AtomicBoolean dropBeforeWrite = new AtomicBoolean();
+    final AtomicBoolean failReadback = new AtomicBoolean();
+    final AtomicBoolean changeAfterWrite = new AtomicBoolean();
+    final AtomicBoolean foreignReadback = new AtomicBoolean();
+    final List<String> requests = new java.util.concurrent.CopyOnWriteArrayList<>();
     final List<String> patchKeys = new ArrayList<>();
     final AtomicInteger patchCalls = new AtomicInteger();
     final ScriptedModel model = new ScriptedModel();
@@ -236,6 +302,7 @@ class EditingWorkflowTest {
       api.createContext("/api/mock/", exchange -> {
         try (exchange) {
           String path = exchange.getRequestURI().getPath().substring("/api/mock".length());
+          requests.add(exchange.getRequestMethod() + " " + path);
           String username = URLDecoder.decode(exchange.getRequestURI().getRawQuery().substring("username=".length()), StandardCharsets.UTF_8);
           Object response;
           int status = 200;
@@ -249,7 +316,16 @@ class EditingWorkflowTest {
               if (dropReply.getAndSet(false)) response = "broken";
             } else if (path.startsWith("/operations/")) response = fixtures.operation(path.substring("/operations/".length()), username);
             else if (path.equals("/portfolios")) response = fixtures.portfolios(null, username);
-            else response = fixtures.portfolio(path.substring("/portfolios/".length()), username);
+            else {
+              String id = path.substring("/portfolios/".length());
+              if (patchCalls.get() > 0 && failReadback.get()) throw new ApiRequestException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "Readback temporarily unavailable");
+              if (patchCalls.get() > 0 && changeAfterWrite.getAndSet(false))
+                fixtures.updatePortfolio(id, username, "external-change", new MockFinanceService.PortfolioEdit("后续编辑", fixtures.portfolio(id, username).version()));
+              response = fixtures.portfolio(id, username);
+              if (patchCalls.get() > 0 && foreignReadback.get()) {
+                var foreign = (tools.jackson.databind.node.ObjectNode) mapper.valueToTree(response); foreign.put("username", "bob"); response = foreign;
+              }
+            }
           } catch (ApiRequestException error) { status = error.status().value(); response = error.body(); }
           byte[] bytes = response.equals("broken") ? "{".getBytes(StandardCharsets.UTF_8) : mapper.writeValueAsBytes(response);
           exchange.sendResponseHeaders(status, bytes.length); exchange.getResponseBody().write(bytes);

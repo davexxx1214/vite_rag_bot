@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -15,6 +15,7 @@ import {
   DialogContent,
   DialogTitle,
   MenuItem,
+  Menu,
   Fab,
   IconButton,
   Link,
@@ -32,14 +33,19 @@ import {
 } from "@mui/material";
 import ArrowUpwardRoundedIcon from "@mui/icons-material/ArrowUpwardRounded";
 import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
+import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
+import MoreHorizRoundedIcon from "@mui/icons-material/MoreHorizRounded";
+import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import "./style.css";
 import { useAgentChat } from "./useAgentChat";
 import { AgentActivityPanel } from "./AgentActivityPanel";
 import { UserInputCard } from "./UserInputCard";
 import { SafeMarkdown } from "./SafeMarkdown";
-import { MainChatInputCaret, useMainChatCaretMode } from "./AnimatedCaret";
+import { MainChatInputCaret, useMainChatCaretMode } from "./MainChatInputCaret";
+import { useChatScroll } from "./useChatScroll";
 
 type HelpDoc = {
   slug: string;
@@ -86,10 +92,11 @@ function App() {
   const chat = useAgentChat();
   const { messages, submitting } = chat;
   const [input, setInput] = useState("");
-  const messagesRef = useRef<HTMLDivElement>(null);
-  const messagesContentRef = useRef<HTMLDivElement>(null);
-  const followReply = useRef(true);
-  const [showLatest, setShowLatest] = useState(false);
+  const { messagesRef, messagesContentRef, showLatest, hasNewContent, scrollToLatest } =
+    useChatScroll(chatOpen, `${chat.userId}:${chat.sessionId}`, messages, chat.inputRequest);
+  const chatTriggerRef = useRef<HTMLButtonElement>(null);
+  const [toolsAnchor, setToolsAnchor] = useState<HTMLElement | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const mainInputHostRef = useRef<HTMLDivElement>(null);
   const mainChatCaretMode = useMainChatCaretMode();
@@ -119,33 +126,6 @@ function App() {
     return () => controller.abort();
   }, []);
 
-  const scrollToLatest = () => {
-    followReply.current = true;
-    setShowLatest(false);
-    const container = messagesRef.current;
-    if (container) container.scrollTop = container.scrollHeight;
-  };
-
-  useLayoutEffect(() => {
-    followReply.current = true;
-    setShowLatest(false);
-  }, [chatOpen, chat.userId, chat.sessionId]);
-
-  useLayoutEffect(() => {
-    const container = messagesRef.current;
-    if (chatOpen && container && followReply.current) container.scrollTop = container.scrollHeight;
-  }, [chatOpen, messages, chat.inputRequest]);
-
-  useEffect(() => {
-    if (!chatOpen || !messagesContentRef.current) return;
-    const observer = new ResizeObserver(() => {
-      const container = messagesRef.current;
-      if (container && followReply.current) container.scrollTop = container.scrollHeight;
-    });
-    observer.observe(messagesContentRef.current);
-    return () => observer.disconnect();
-  }, [chatOpen]);
-
   const openChat = () => {
     setChatOpen(true);
     window.setTimeout(() => inputRef.current?.focus(), 80);
@@ -153,7 +133,9 @@ function App() {
 
   const closeChat = () => {
     chat.cancel();
+    setToolsAnchor(null);
     setChatOpen(false);
+    window.requestAnimationFrame(() => chatTriggerRef.current?.focus());
   };
 
   const sendMessage = async (event?: FormEvent) => {
@@ -162,16 +144,28 @@ function App() {
     if (!content || submitting || chat.loading || !chat.sessionId) return;
     scrollToLatest();
     setInput("");
+    window.requestAnimationFrame(() => inputRef.current?.focus());
     await chat.send(content);
-    window.setTimeout(() => inputRef.current?.focus(), 0);
   };
 
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       event.currentTarget.closest("form")?.requestSubmit();
     }
   };
+
+  const copyMessage = (messageId: string, content: string) => {
+    if (!content.trim()) return;
+    void navigator.clipboard?.writeText(content).catch(() => undefined);
+    setCopiedMessageId(messageId);
+    window.setTimeout(() => {
+      setCopiedMessageId(current => current === messageId ? "" : current);
+    }, 2200);
+  };
+
+  const estimatedTokens = useMemo(() => Math.ceil(input.trim().length * 0.7), [input]);
 
   return (
     <Box sx={{ minWidth: 320, minHeight: "100vh" }}>
@@ -302,41 +296,52 @@ function App() {
       </Box>
 
       {!chatOpen && (
-        <Fab variant="extended" onClick={openChat} aria-label="Open AI help bot" sx={{ position: "fixed", zIndex: 1200, right: { xs: 18, sm: 28 }, bottom: { xs: 18, sm: 26 }, bgcolor: colors.ink, color: "white", "&:hover": { bgcolor: colors.greenDark } }}>
+        <Fab ref={chatTriggerRef} variant="extended" onClick={openChat} aria-label="Open AI help bot" aria-haspopup="dialog" sx={{ position: "fixed", zIndex: 1200, right: { xs: 18, sm: 28 }, bottom: { xs: 18, sm: 26 }, bgcolor: colors.ink, color: "white", "&:hover": { bgcolor: colors.greenDark } }}>
           <AutoAwesomeRoundedIcon sx={{ mr: 1 }} /> Ask AI
         </Fab>
       )}
 
       {chatOpen && (
         <Paper
+          className="chat-panel"
           role="dialog"
-          aria-label="AI help bot"
-          elevation={16}
+          aria-labelledby="chat-title"
+          elevation={0}
+          onKeyDown={event => {
+            if (event.key === "Escape" && !event.defaultPrevented && !toolsAnchor
+              && event.currentTarget.contains(event.target as Node)) {
+              event.preventDefault();
+              closeChat();
+            }
+          }}
           sx={{
             position: "fixed",
             zIndex: 1300,
             right: { xs: 10, sm: 26 },
             bottom: { xs: 10, sm: 24 },
-            width: { xs: "calc(100vw - 20px)", sm: 430 },
-            height: { xs: "calc(100vh - 20px)", sm: "min(680px, calc(100vh - 40px))" },
+            width: { xs: "calc(100% - 20px)", sm: 430 },
+            height: { xs: "calc(100dvh - 20px)", sm: "min(680px, calc(100dvh - 40px))" },
             overflow: "hidden",
             border: 1,
-            borderColor: "#d8dfd9",
-            borderRadius: 2.25,
+            borderColor: "var(--chat-border)",
+            borderRadius: 2.5,
+            boxShadow: "var(--chat-floating-shadow)",
+            containerType: "inline-size",
+            containerName: "chat",
             display: "grid",
             gridTemplateColumns: "minmax(0, 1fr)",
             gridTemplateRows: "auto auto 1fr auto auto",
           }}
         >
-          <Box component="header" sx={{ minHeight: 76, p: 1.75, borderBottom: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1.5 }}>
+          <Box component="header" className="chat-header" sx={{ minHeight: 68, p: 1.75, borderBottom: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1.25 }}>
             <Avatar sx={{ width: 42, height: 42, bgcolor: colors.greenSoft, color: colors.greenDark }}>
               <AutoAwesomeRoundedIcon fontSize="small" />
             </Avatar>
             <Box sx={{ minWidth: 0, flex: 1 }}>
-              <Typography sx={{ fontSize: 15, fontWeight: 800 }}>Finance Assistant</Typography>
+              <Typography id="chat-title" sx={{ fontSize: 15, fontWeight: 800 }}>Finance Assistant</Typography>
               <Box sx={{ mt: 0.25, display: "flex", alignItems: "center", gap: 0.75, color: "text.secondary" }}>
                 <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: "#23a66b", boxShadow: "0 0 0 3px #ddf4e8" }} />
-                <Typography sx={{ fontSize: 10 }}>Help docs, portfolio queries & edits</Typography>
+                <Typography className="chat-subtitle" sx={{ fontSize: 11 }}>Help docs, portfolio queries & edits</Typography>
               </Box>
             </Box>
             <Tooltip title="Close">
@@ -344,7 +349,7 @@ function App() {
             </Tooltip>
           </Box>
 
-          <Box sx={{ px: 1.75, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
+          <Box className="chat-controls" sx={{ px: 1.75, py: 1.25, borderBottom: 1, borderColor: "divider", bgcolor: "#fbfcfa" }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <TextField select size="small" label="Demo user" value={chat.users.length ? chat.userId : ""}
                 disabled={submitting || chat.memoryBusy} sx={{ flex: 1, minWidth: 0 }}
@@ -352,7 +357,20 @@ function App() {
                 {chat.users.map(user => <MenuItem key={user.id} value={user.id}>{user.username}</MenuItem>)}
               </TextField>
               <Button size="small" disabled={submitting || chat.loading} onClick={() => void chat.selectSession()}>New chat</Button>
-              <Button size="small" disabled={submitting || chat.loading} onClick={() => void chat.openMemory()}>Memory</Button>
+              <Button className="chat-memory-button" size="small" disabled={submitting || chat.loading || chat.memoryBusy} onClick={() => void chat.openMemory()}>Memory</Button>
+              <Tooltip title="更多操作">
+                <IconButton className="chat-more-tools" size="small" sx={{ width: 38, height: 38 }} aria-label="更多聊天操作"
+                  aria-controls={toolsAnchor ? "chat-tools-menu" : undefined} aria-haspopup="menu"
+                  aria-expanded={!!toolsAnchor} onClick={event => setToolsAnchor(event.currentTarget)}>
+                  <MoreHorizRoundedIcon />
+                </IconButton>
+              </Tooltip>
+              <Menu id="chat-tools-menu" anchorEl={toolsAnchor} open={!!toolsAnchor} onClose={() => setToolsAnchor(null)}>
+                <MenuItem disabled={submitting || chat.loading || chat.memoryBusy} onClick={() => { setToolsAnchor(null); void chat.openMemory(); }}>Memory</MenuItem>
+                <MenuItem disabled={!chat.sessionId || submitting || chat.loading} onClick={() => { setToolsAnchor(null); void chat.exportSession(); }}>Export chat</MenuItem>
+                <MenuItem disabled={!chat.sessionId || submitting || chat.loading} sx={{ color: "error.main" }} onClick={() => { setToolsAnchor(null); void chat.deleteSession(); }}>Delete chat</MenuItem>
+                {chat.sessions.length >= 50 && <MenuItem disabled={chat.loading || submitting} onClick={() => { setToolsAnchor(null); void chat.loadMoreSessions(); }}>More conversations</MenuItem>}
+              </Menu>
             </Box>
             {chat.sessions.length > 1 && <TextField select fullWidth size="small" label="Conversation"
               value={chat.sessionId} disabled={submitting || chat.loading} sx={{ mt: 1.25 }}
@@ -361,7 +379,7 @@ function App() {
             </TextField>}
             {chat.error && <Typography role="alert" color="error" sx={{ mt: 1, fontSize: 12 }}>{chat.error}</Typography>}
             {chat.loading && <Typography sx={{ mt: 1, fontSize: 11, color: "text.secondary" }}>Loading conversation…</Typography>}
-            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mt: 0.5 }}>
+            <Box className="chat-secondary-tools" sx={{ display: "flex", flexWrap: "wrap", gap: 1, mt: 0.5 }}>
               {chat.sessions.length >= 50 && <Button size="small" disabled={chat.loading || submitting} onClick={() => void chat.loadMoreSessions()}>More conversations</Button>}
               <Button size="small" disabled={!chat.sessionId || submitting || chat.loading} onClick={() => void chat.exportSession()}>Export chat</Button>
               <Button size="small" color="error" disabled={!chat.sessionId || submitting || chat.loading} onClick={() => void chat.deleteSession()}>Delete chat</Button>
@@ -372,21 +390,47 @@ function App() {
           </Box>
 
           <Box sx={{ position: "relative", minHeight: 0 }}>
-            <Box ref={messagesRef} className="chat-messages" aria-live="polite"
-              onScroll={event => {
-                const container = event.currentTarget;
-                const atBottom = container.scrollHeight - container.clientHeight - container.scrollTop <= 48;
-                followReply.current = atBottom;
-                setShowLatest(!atBottom);
-              }} sx={{ height: "100%", overflowY: "auto", p: 2.25, bgcolor: "#f7f8f5" }}>
+            <Box ref={messagesRef} className="chat-messages" tabIndex={0} aria-label="聊天消息"
+              sx={{ height: "100%", overflowY: "auto", p: 2.25, bgcolor: "#fafaf8" }}>
               <div ref={messagesContentRef}>
                 {chat.historyOffset > 0 && <Button fullWidth size="small" disabled={chat.historyBusy || submitting}
                   onClick={() => void chat.loadEarlier()}>{chat.historyBusy ? "Loading…" : "Load earlier messages"}</Button>}
                 {messages.map((message) => (
-                  <Box key={message.id} sx={{ mb: 2.5, display: "flex", flexDirection: "column", alignItems: message.role === "user" ? "flex-end" : "flex-start" }}>
-                    <Typography sx={{ mx: 0.5, mb: 0.75, color: "#8b948d", fontSize: 9, fontWeight: 800, letterSpacing: ".09em", textTransform: "uppercase" }}>
-                      {message.role === "assistant" ? "Help Bot" : "You"}
-                    </Typography>
+                  <Box
+                    key={message.id}
+                    className={`chat-message-item chat-message-${message.role}`}
+                    sx={{ mb: 2.5, display: "flex", flexDirection: "column", alignItems: message.role === "user" ? "flex-end" : "flex-start" }}
+                  >
+                    {message.role === "assistant" ? (
+                      <Box sx={{ mb: 0.75, display: "inline-flex", alignItems: "center", gap: 0.85, userSelect: "none" }}>
+                        <Box
+                          component="span"
+                          sx={{
+                            width: 18,
+                            height: 18,
+                            borderRadius: "5px",
+                            bgcolor: colors.greenDark,
+                            color: "white",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 10,
+                            fontFamily: "Georgia, serif",
+                            fontWeight: 700,
+                            boxShadow: "0 1px 2px rgba(12, 80, 51, 0.2)",
+                          }}
+                        >
+                          ✦
+                        </Box>
+                        <Typography sx={{ color: colors.ink, fontSize: 11, fontWeight: 700, letterSpacing: ".01em" }}>
+                          Help Bot
+                        </Typography>
+                      </Box>
+                    ) : (
+                      <Typography sx={{ mx: 0.5, mb: 0.5, color: "#8b948d", fontSize: 9, fontWeight: 800, letterSpacing: ".09em", textTransform: "uppercase" }}>
+                        You
+                      </Typography>
+                    )}
                     {message.role === "assistant" && (message.pending || message.partial || !!message.activities?.length) &&
                       <AgentActivityPanel activities={message.activities || []} pending={message.pending}
                         partial={message.partial} status={message.status} startedAt={message.startedAt} endedAt={message.endedAt} />}
@@ -394,25 +438,27 @@ function App() {
                       variant="outlined"
                       sx={{
                         display: message.pending && !message.content ? "none" : undefined,
-                        maxWidth: "91%",
+                        maxWidth: message.role === "user" ? "91%" : "100%",
                         minWidth: 0,
-                        overflowX: "auto",
-                        px: 1.75,
-                        py: 1.25,
-                        borderColor: message.role === "user" ? colors.greenDark : "#dde3dd",
-                        borderRadius: message.role === "user" ? "14px 4px 14px 14px" : "4px 14px 14px 14px",
-                        bgcolor: message.role === "user" ? colors.greenDark : "white",
-                        color: message.role === "user" ? "white" : "#344038",
+                        width: message.role === "assistant" ? "100%" : undefined,
+                        px: message.role === "user" ? 1.85 : 0.25,
+                        py: message.role === "user" ? 1.15 : 0.25,
+                        border: message.role === "user" ? 1 : 0,
+                        borderColor: message.role === "user" ? "rgba(18, 108, 70, 0.18)" : "transparent",
+                        borderRadius: message.role === "user" ? "18px 18px 4px 18px" : 1.5,
+                        bgcolor: message.role === "user" ? "#e9f2ec" : "transparent",
+                        color: message.role === "user" ? colors.ink : "#26312a",
+                        boxShadow: message.role === "user" ? "0 1px 2px rgba(24, 39, 29, 0.04)" : "none",
                       }}
                     >
                       {message.role === "assistant" ? (
                         <SafeMarkdown content={message.content} variant="message" streaming={message.pending} />
                       ) : (
-                        <Typography sx={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.55 }}>{message.content}</Typography>
+                        <Typography sx={{ whiteSpace: "pre-wrap", fontSize: 13.5, lineHeight: 1.55, overflowWrap: "anywhere" }}>{message.content}</Typography>
                       )}
                     </Paper>
                     {!!message.sources?.length && (
-                      <Box sx={{ width: "91%", mt: 1.25, display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+                      <Box sx={{ width: "100%", mt: 1, display: "flex", flexWrap: "wrap", gap: 0.75 }}>
                         <Typography sx={{ width: "100%", color: "#8a938c", fontSize: 9, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase" }}>
                           Sources
                         </Typography>
@@ -434,20 +480,68 @@ function App() {
                         ))}
                       </Box>
                     )}
+                    {message.role === "assistant" && !message.pending && !!message.content.trim() && (
+                      <Box className="chat-message-actions" sx={{ mt: 0.5, display: "flex", alignItems: "center", gap: 0.75 }}>
+                        <Button
+                          size="small"
+                          color="inherit"
+                          onClick={() => copyMessage(message.id, message.content)}
+                          startIcon={copiedMessageId === message.id
+                            ? <CheckRoundedIcon sx={{ fontSize: "13px !important", color: "primary.main" }} />
+                            : <ContentCopyRoundedIcon sx={{ fontSize: "13px !important" }} />}
+                          sx={{
+                            minWidth: 0,
+                            px: 0.85,
+                            py: 0.2,
+                            height: 24,
+                            borderRadius: "6px",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: copiedMessageId === message.id ? "primary.main" : "text.secondary",
+                            "&:hover": { bgcolor: "rgba(33, 53, 40, 0.06)", color: "text.primary" },
+                          }}
+                        >
+                          {copiedMessageId === message.id ? "Copied" : "Copy"}
+                        </Button>
+                      </Box>
+                    )}
                   </Box>
                 ))}
                 {chat.inputRequest && <UserInputCard key={chat.inputRequest.requestId} request={chat.inputRequest}
                   busy={submitting || chat.loading} onAnswer={chat.answerInput} />}
               </div>
             </Box>
-            {showLatest && <Button size="small" variant="contained" onClick={scrollToLatest}
-              sx={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", borderRadius: 5 }}>
-              回到最新回答
+            {showLatest && <Button className="chat-latest" size="small" variant="outlined" onClick={scrollToLatest}
+              sx={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", borderRadius: 5,
+                bgcolor: "white", whiteSpace: "nowrap", borderColor: "var(--chat-border)", boxShadow: "var(--chat-control-shadow)",
+                "&:hover": { bgcolor: "#f3f7f3" } }}>
+              {hasNewContent ? "有新内容 ↓" : "回到最新回答 ↓"}
             </Button>}
           </Box>
 
-          <Paper component="form" onSubmit={(event) => void sendMessage(event)} variant="outlined" sx={{ m: "13px 14px 8px", p: "6px 7px 6px 12px", borderColor: "#cfd7d0", borderRadius: 1.75, display: "flex", alignItems: "flex-end", gap: 1, "&:focus-within": { borderColor: "#88a895", boxShadow: "0 0 0 3px #edf4ef" } }}>
-            <Box ref={mainInputHostRef} sx={{ position: "relative", flex: 1, minWidth: 0 }}>
+          <Paper
+            className="chat-composer"
+            component="form"
+            onSubmit={(event) => void sendMessage(event)}
+            variant="outlined"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) inputRef.current?.focus();
+            }}
+            sx={{
+              m: "10px 14px 6px",
+              p: "10px 11px 8px 13px",
+              borderColor: "transparent",
+              borderRadius: "20px",
+              bgcolor: "#ffffff",
+              boxShadow: "var(--chat-composer-shadow)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 0.75,
+              "&:hover": { boxShadow: "var(--chat-composer-shadow-hover)" },
+              "&:focus-within": { boxShadow: "var(--chat-focus-ring)" },
+            }}
+          >
+            <Box ref={mainInputHostRef} sx={{ position: "relative", width: "100%", minWidth: 0 }}>
               <TextField
                 inputRef={inputRef}
                 value={input}
@@ -461,8 +555,8 @@ function App() {
                 slotProps={{ htmlInput: { maxLength: 2000 }, input: { disableUnderline: true } }}
                 sx={{
                   "& textarea:not([aria-hidden='true'])": {
-                    py: 0.8,
-                    fontSize: { xs: 16, sm: 12 },
+                    py: 0.4,
+                    fontSize: 16,
                     lineHeight: 1.45,
                     ...(mainChatCaretMode === "animated" ? { caretColor: "transparent" } : {}),
                   },
@@ -475,12 +569,74 @@ function App() {
                 disabled={submitting || chat.loading}
               />
             </Box>
-            <IconButton type="submit" disabled={submitting || chat.loading || !chat.sessionId || !input.trim()} aria-label="Send message" sx={{ width: 38, height: 38, flex: "0 0 auto", borderRadius: 1.25, bgcolor: colors.greenDark, color: "white", "&:hover": { bgcolor: colors.green }, "&.Mui-disabled": { bgcolor: "#b7c1ba", color: "white" } }}>
-              {submitting ? <CircularProgress size={17} color="inherit" /> : <ArrowUpwardRoundedIcon fontSize="small" />}
-            </IconButton>
+            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, pt: 0.25, minWidth: 0 }}>
+              <Typography className="chat-composer-hint" sx={{ color: "text.secondary", fontSize: 11, userSelect: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {submitting ? "正在生成回答…" : "Enter 发送 · Shift+Enter 换行"}
+              </Typography>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexShrink: 0 }}>
+                {estimatedTokens > 0 && !submitting && (
+                  <Typography
+                    sx={{
+                      fontSize: 10.5,
+                      fontFamily: '"SFMono-Regular", Consolas, monospace',
+                      fontVariantNumeric: "tabular-nums",
+                      color: input.length > 1800 ? "error.main" : "text.secondary",
+                      userSelect: "none",
+                    }}
+                    title="当前输入预估 Token"
+                  >
+                    ~{estimatedTokens} tok
+                  </Typography>
+                )}
+                {submitting ? (
+                  <Tooltip title="停止生成">
+                    <IconButton
+                      type="button"
+                      onClick={chat.cancel}
+                      aria-label="Stop response"
+                      sx={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: "10px",
+                        bgcolor: colors.ink,
+                        color: "white",
+                        transition: "transform 140ms cubic-bezier(.34, 1.3, .64, 1), background-color 140ms ease",
+                        "&:hover": { bgcolor: "#2a382e" },
+                        "&:active": { transform: "scale(0.94)" },
+                      }}
+                    >
+                      <StopRoundedIcon sx={{ fontSize: 17 }} />
+                    </IconButton>
+                  </Tooltip>
+                ) : (
+                  <IconButton
+                    type="submit"
+                    disabled={chat.loading || !chat.sessionId || !input.trim()}
+                    aria-label="Send message"
+                    sx={{
+                      width: 32,
+                      height: 32,
+                      flex: "0 0 auto",
+                      borderRadius: "10px",
+                      bgcolor: colors.greenDark,
+                      color: "white",
+                      transition: "transform 140ms cubic-bezier(.34, 1.3, .64, 1), background-color 140ms ease, opacity 140ms ease",
+                      "&:hover": { bgcolor: colors.green },
+                      "&:active": { transform: "scale(0.94)" },
+                      "&.Mui-disabled": { bgcolor: "#d5ddd7", color: "white" },
+                    }}
+                  >
+                    <ArrowUpwardRoundedIcon sx={{ fontSize: 17 }} />
+                  </IconButton>
+                )}
+              </Box>
+            </Box>
           </Paper>
-          <Typography sx={{ mx: 1.75, mb: 1.5, color: "#9aa29c", fontSize: 9, textAlign: "center" }}>
-            {submitting ? <Button size="small" onClick={chat.cancel}>Stop response</Button>
+          <Box className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+            {submitting ? "正在生成回答" : messages.at(-1)?.partial ? "回答已停止，已有内容已保留" : "回答已就绪"}
+          </Box>
+          <Typography sx={{ mx: 1.75, mb: 1.5, color: "text.secondary", fontSize: 10, textAlign: "center" }}>
+            {submitting ? <Button size="small" onClick={chat.cancel} sx={{ py: 0, minHeight: 20, fontSize: 11 }}>Stop response</Button>
               : "Financial values are mock snapshots. Preferences are saved per demo user."}
           </Typography>
         </Paper>

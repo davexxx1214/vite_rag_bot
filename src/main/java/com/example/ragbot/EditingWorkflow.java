@@ -32,6 +32,7 @@ final class EditingWorkflow {
     registry.register("update_portfolio",
         "Rename one current-user portfolio ONLY when the user explicitly requested it. Read get_portfolio first for its version. "
             + "Only name is editable. On invalid/duplicate values or conflicts this tool creates a correction card and pauses. "
+            + "After a committed edit the server queries get_portfolio again and returns verification; an inline result table/chart is automatic. "
             + "Never choose a suggested replacement without the user's answer. A timeout may have committed; check_edit_operation resolves it.",
         Map.of("id", text("Exact portfolio ID"), "name", text("User-requested new name, 1-80 characters"),
             "expectedVersion", Map.of("type", "integer", "minimum", 1, "description", "Version from latest get_portfolio")),
@@ -114,10 +115,10 @@ final class EditingWorkflow {
   }
 
   private JsonNode submit(AgentTool.Scope scope, ObjectNode draft) throws IOException, InterruptedException {
+    JsonNode receipt;
     try {
-      JsonNode receipt = finance.updatePortfolio(draft.path("id").asString(), draft.path("name").asString(),
+      receipt = finance.updatePortfolio(draft.path("id").asString(), draft.path("name").asString(),
           draft.path("expectedVersion").asLong(), draft.path("operationId").asString(), scope.user(), scope.control());
-      return committed(scope, receipt);
     } catch (ApiRequestException error) {
       draft.put("status", "rejected");
       ObjectNode state = read(scope.user().id(), scope.sessionId()); state.set("draft", draft);
@@ -131,6 +132,7 @@ final class EditingWorkflow {
       if (error instanceof InterruptedException interrupted) throw interrupted;
       return pending;
     }
+    return committed(scope, receipt);
   }
 
   private JsonNode committed(AgentTool.Scope scope, JsonNode receipt) throws IOException {
@@ -152,7 +154,43 @@ final class EditingWorkflow {
       // Receipt remains durable; subsequent check retries cache invalidation.
       state.put("cacheRefreshRequired", true); write(scope.user().id(), scope.sessionId(), state);
     }
-    return receipt;
+    return verify(scope, receipt);
+  }
+
+  private JsonNode verify(AgentTool.Scope scope, JsonNode receipt) throws IOException {
+    // Query errors are separate from PATCH errors: never undo or replay a confirmed write.
+    ObjectNode enriched = (ObjectNode) receipt.deepCopy(); enriched.remove("verification");
+    ObjectNode verification = mapper.createObjectNode();
+    String id = receipt.path("portfolio").path("id").asString();
+    String activity = "edit-query-" + UUID.randomUUID();
+    long started = System.nanoTime();
+    boolean queried = false;
+    try {
+      scope.emit(new AgentEvent.ActivityStart(activity, "正在重新查询编辑后的投资组合…", id));
+      JsonNode current = finance.get("/portfolios/" + FinanceApiClient.segment(id), scope.user(), scope.control());
+      if (!current.path("id").asString().equals(id) || !current.path("username").asString().equals(scope.user().username())
+          || !current.path("name").isString() || !current.path("version").isIntegralNumber()
+          || current.path("version").asLong() < 1 || !current.path("currency").asString().matches("[A-Z]{3}"))
+        throw new IOException("Invalid verification portfolio");
+      for (String field : List.of("cashBalance", "marketValue", "totalValue", "unrealizedPnl")) {
+        if (!current.path(field).isNumber()) throw new IOException("Invalid verification amount");
+        new java.math.BigDecimal(current.path(field).asString());
+      }
+      Instant.parse(current.path("asOf").asString()); Instant.parse(current.path("updatedAt").asString());
+      boolean matches = current.path("version").asLong() == receipt.path("portfolio").path("version").asLong()
+          && current.path("name").asString().equals(receipt.path("portfolio").path("name").asString());
+      verification.put("status", matches ? "confirmed" : "changed");
+      verification.set("portfolio", current); queried = true;
+    } catch (IOException | InterruptedException | RuntimeException error) {
+      if (error instanceof InterruptedException) Thread.currentThread().interrupt();
+      verification.put("status", "unavailable");
+      verification.put("message", "修改回执已保存，但编辑后的查询未完成；可再次查询，勿重复提交修改。");
+    }
+    verification.put("queriedAt", Instant.now().toString());
+    verification.put("source", finance.sourceUrl("/portfolios/" + FinanceApiClient.segment(id), scope.user()));
+    enriched.set("verification", verification);
+    scope.emit(new AgentEvent.ActivityEnd(activity, queried, AgentProgress.elapsed(started)));
+    return enriched;
   }
 
   JsonNode check(AgentTool.Scope scope) throws IOException, InterruptedException {
