@@ -1,0 +1,4 @@
+target/
+config.properties
+.opsagent/
+services.local.yaml

@@ -1,0 +1,8 @@
+# Environment variables override this file. No key is required for --demo.
+api_key=
+chat_model=gpt-5-mini
+openai_base_url=https://api.openai.com/v1
+reasoning_effort=low
+timeout_seconds=240
+max_rounds=8
+max_tool_calls=12

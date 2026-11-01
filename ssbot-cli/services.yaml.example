@@ -1,0 +1,20 @@
+# Relative paths resolve against this file. Use forward slashes or single quotes.
+services:
+  - id: order-api
+    type: windows-service
+    service_name: OrderApi
+    install_dir: D:/apps/order-api
+    logs: [D:/apps/order-api/logs/*.log]
+    ports: [8080]
+    health: http://localhost:8080/health
+    depends_on: [tcp://db01:1433, https://auth.internal/health]
+    event_providers: [Service Control Manager, .NET Runtime, Application Error]
+  - id: public-web
+    type: iis-site
+    site_name: Default Web Site
+    app_pool: DefaultAppPool
+    install_dir: C:/inetpub/wwwroot
+    logs: [C:/inetpub/logs/LogFiles/W3SVC1/*.log]
+    ports: [80]
+    health: http://localhost/
+    event_providers: [Microsoft-Windows-WAS, IIS-W3SVC-WP]

@@ -1,0 +1,6 @@
+# A usable local entry. See services.yaml.example for application configuration.
+services:
+  - id: event-log
+    type: windows-service
+    service_name: EventLog
+    event_providers: [Service Control Manager]
